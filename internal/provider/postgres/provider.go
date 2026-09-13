@@ -19,11 +19,6 @@ func (pr *Provider) Engine() string { return Engine }
 
 var errNotImplemented = fmt.Errorf("postgres provider: not implemented yet")
 
-// Introspect reads observed state from the target.
-func (pr *Provider) Introspect(context.Context, provider.Querier, provider.Scope, provider.Cursor) (*provider.Snapshot, error) {
-	return nil, errNotImplemented
-}
-
 // Compile lowers a portable permission set into PostgreSQL statements.
 func (pr *Provider) Compile(*core.EffectivePermissionSet, core.Capabilities, provider.CompileOptions) (*provider.StatementSet, error) {
 	return nil, errNotImplemented

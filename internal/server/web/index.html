@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db-iam console</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1a1a1a; --muted: #6b7280;
+    --line: #e5e5e3; --accent: #2f6f4f; --warn: #9a3412; --danger: #b91c1c;
+    --chip: #f1f1ef;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --panel: #1d1d22; --ink: #ececec; --muted: #9a9aa3;
+      --line: #2c2c33; --accent: #6ab48a; --warn: #e08a4e; --danger: #ef6a6a;
+      --chip: #26262d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 20px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .banner {
+    margin: 0; padding: 10px 24px; background: color-mix(in srgb, var(--warn) 12%, transparent);
+    color: var(--warn); font-size: 12.5px; border-bottom: 1px solid var(--line);
+  }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; display: grid; gap: 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  section > h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  .body { padding: 16px 18px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .chip {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    background: var(--chip); font-size: 11.5px; margin-right: 4px; white-space: nowrap;
+  }
+  .native { color: var(--accent); font-weight: 600; }
+  .substitute { color: var(--warn); font-weight: 600; }
+  .none { color: var(--danger); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .stats { display: flex; gap: 22px; flex-wrap: wrap; }
+  .stat b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .note {
+    border-left: 2px solid var(--warn); padding: 6px 0 6px 12px;
+    margin: 6px 0; color: var(--muted); font-size: 12.5px;
+  }
+  .err { color: var(--danger); }
+  tr.dim td { opacity: 0.5; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; }
+  .kv dt { color: var(--muted); font-size: 12.5px; }
+  .kv dd { margin: 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>db-iam</h1>
+  <span class="sub" id="targetline">loading…</span>
+</header>
+<p class="banner">
+  Evaluation build — no authentication, no tenancy, no authorization.
+  Bind to localhost only. See docs/ARCHITECTURE.md §12.
+</p>
+
+<main>
+  <section>
+    <h2>Capabilities <span class="muted" style="text-transform:none;letter-spacing:0">— probed, not inferred</span></h2>
+    <div class="body" id="caps">loading…</div>
+  </section>
+
+  <section>
+    <h2>Observed state</h2>
+    <div class="body" id="summary">loading…</div>
+  </section>
+
+  <section>
+    <h2>Roles</h2>
+    <div class="body" id="roles">loading…</div>
+  </section>
+
+  <section>
+    <h2>Grants</h2>
+    <div class="body" id="grants">loading…</div>
+  </section>
+
+  <section>
+    <h2>Objects</h2>
+    <div class="body" id="objects">loading…</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+async function get(path) {
+  const r = await fetch(path);
+  const body = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
+  if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+  return body;
+}
+
+const supportClass = (v) => ({ native: "native", substitute: "substitute", none: "none" }[v] || "muted");
+
+function renderCaps(c) {
+  const row = (label, value, cls) =>
+    `<tr><td>${esc(label)}</td><td class="${cls || ""}">${esc(value)}</td></tr>`;
+  const yn = (b) => b ? "yes" : "no";
+
+  let html = `<table><tbody>
+    ${row("Engine", c.Engine)}
+    ${row("Version", c.Version)}
+    ${row("Managed flavour", c.Flavor || "vanilla")}
+    ${row("Hierarchy", (c.Levels || []).join(" › "))}
+    ${row("Column grants", c.ColumnGrants, supportClass(c.ColumnGrants))}
+    ${row("Row filters", c.RowFilters, supportClass(c.RowFilters))}
+    ${row("Masking", c.Masking, supportClass(c.Masking))}
+    ${row("Persistent DENY", yn(c.NativeDeny), c.NativeDeny ? "" : "muted")}
+    ${row("Future grants", yn(c.FutureGrants))}
+    ${row("Transactional DDL", yn(c.TransactionalDDL))}
+    ${row("Connected role is admin", yn(c.Superuser), c.Superuser ? "" : "substitute")}
+  </tbody></table>`;
+
+  if (!c.NativeDeny) {
+    html += `<p class="note">No persistent DENY on this engine: an IAM-style deny is
+      resolved when the plan is built, by withholding the grant. See ARCHITECTURE §7.</p>`;
+  }
+  for (const n of c.Notes || []) html += `<p class="note">${esc(n)}</p>`;
+  $("caps").innerHTML = html;
+}
+
+function renderSummary(s) {
+  const st = (n, label) => `<div class="stat"><b>${n}</b><span>${esc(label)}</span></div>`;
+  let html = `<div class="stats">
+    ${st(s.summary.principals, "roles")}
+    ${st(s.summary.objects, "objects")}
+    ${st(s.summary.grants - s.summary.owner_grants, "manageable grants")}
+    ${st(s.summary.owner_grants, "held by owners")}
+    ${st(s.summary.public_grants, "held by PUBLIC")}
+  </div>
+  <dl class="kv" style="margin-top:14px">
+    <dt>snapshot</dt><dd class="mono">${esc(s.version)}</dd>
+    <dt>taken at</dt><dd class="mono">${esc(s.taken_at)}</dd>
+  </dl>`;
+  if (s.summary.public_grants > 0) {
+    html += `<p class="note">PUBLIC is an implicit grantee on newly created objects.
+      Authoritative mode revokes these first.</p>`;
+  }
+  $("summary").innerHTML = html;
+}
+
+function renderRoles(s) {
+  const rows = s.principals.map(p => `<tr>
+    <td class="mono">${esc(p.name)}</td>
+    <td>${p.login ? "login" : '<span class="muted">no login</span>'}</td>
+    <td>${p.inherit ? "inherit" : '<span class="muted">noinherit</span>'}</td>
+    <td>${p.member_of.map(m => `<span class="chip mono">${esc(m)}</span>`).join("") ||
+          '<span class="muted">—</span>'}</td>
+  </tr>`).join("");
+  $("roles").innerHTML = `<table>
+    <thead><tr><th>role</th><th>login</th><th>inheritance</th><th>member of</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="4" class="muted">none</td></tr>'}</tbody></table>`;
+}
+
+function renderGrants(s) {
+  const rows = s.grants.map(g => `<tr class="${g.implicit ? "dim" : ""}">
+    <td class="mono">${esc(g.grantee)}${
+      g.grantee === "PUBLIC" ? ' <span class="chip substitute">PUBLIC</span>' :
+      g.implicit ? ' <span class="chip">owner</span>' : ""}</td>
+    <td class="mono">${esc(g.action)}</td>
+    <td class="mono">${esc(g.schema)}.${esc(g.object)}</td>
+    <td>${g.columns.length
+        ? g.columns.map(c => `<span class="chip mono">${esc(c)}</span>`).join("")
+        : '<span class="muted">all columns</span>'}</td>
+  </tr>`).join("");
+  $("grants").innerHTML = `<table>
+    <thead><tr><th>grantee</th><th>action</th><th>object</th><th>columns</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="4" class="muted">no explicit grants</td></tr>'}</tbody></table>
+    <p class="note">Rows marked <span class="chip">owner</span> are privileges held by
+    owning the object. PostgreSQL materialises these into the ACL as soon as any grant is
+    made, but revoking one breaks the owner, so no reconcile mode proposes it.</p>
+    <p class="note">Objects with no grants at all are absent: a NULL ACL means owner
+    defaults apply, which the owner column below records instead.</p>`;
+}
+
+function renderObjects(s) {
+  const rows = s.objects.map(o => `<tr>
+    <td class="mono">${esc(o.schema)}.${esc(o.name)}</td>
+    <td><span class="chip">${esc(o.kind)}</span></td>
+    <td class="mono">${esc(o.owner)}</td>
+    <td>${o.rls ? '<span class="native">enabled</span>' : '<span class="muted">off</span>'}</td>
+    <td class="muted">${o.columns.length || "—"}</td>
+  </tr>`).join("");
+  $("objects").innerHTML = `<table>
+    <thead><tr><th>object</th><th>kind</th><th>owner</th><th>row security</th><th>columns</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</tbody></table>`;
+}
+
+function fail(id, err) {
+  $(id).innerHTML = `<p class="err">${esc(err.message)}</p>`;
+}
+
+(async function main() {
+  let target;
+  try {
+    const { targets } = await get("/api/v1/targets");
+    if (!targets.length) throw new Error("no targets configured");
+    target = targets[0];
+    $("targetline").innerHTML =
+      `<span class="mono">${esc(target.id)}</span> · ${esc(target.engine)} · ` +
+      `<span class="mono muted">${esc(target.connection)}</span>`;
+  } catch (e) {
+    $("targetline").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    for (const id of ["caps", "summary", "roles", "grants", "objects"]) fail(id, e);
+    return;
+  }
+
+  get(`/api/v1/targets/${encodeURIComponent(target.id)}/capabilities`)
+    .then(renderCaps).catch(e => fail("caps", e));
+
+  get(`/api/v1/targets/${encodeURIComponent(target.id)}/snapshot`)
+    .then(s => { renderSummary(s); renderRoles(s); renderGrants(s); renderObjects(s); })
+    .catch(e => { for (const id of ["summary","roles","grants","objects"]) fail(id, e); });
+})();
+</script>
+</body>
+</html>

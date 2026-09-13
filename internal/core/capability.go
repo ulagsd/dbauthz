@@ -117,3 +117,23 @@ func (c Capabilities) CanExpress(g Grant) (Support, string) {
 	}
 	return worst, limit
 }
+
+// MarshalJSON renders support as its name, so an API response reads as
+// "native" rather than 2.
+func (s Support) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.String() + `"`), nil
+}
+
+// MarshalJSON renders the level set as a list of level names.
+func (s LevelSet) MarshalJSON() ([]byte, error) {
+	out := []byte{'['}
+	for i, l := range s.Levels() {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, '"')
+		out = append(out, l.String()...)
+		out = append(out, '"')
+	}
+	return append(out, ']'), nil
+}

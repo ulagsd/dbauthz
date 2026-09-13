@@ -211,4 +211,9 @@ type ObservedGrant struct {
 	Action  core.Action
 	Path    core.ResourcePath
 	Columns []string // empty means the whole object
+
+	// Implicit marks a privilege the grantee holds by owning the object rather
+	// than by an explicit grant. Revoking one breaks the owner, so no
+	// reconcile mode may propose it.
+	Implicit bool
 }

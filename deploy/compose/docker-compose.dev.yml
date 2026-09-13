@@ -1,0 +1,15 @@
+# Development override: serve the console from the working tree instead of the
+# copy embedded in the binary, so an edit to index.html is one refresh away
+# rather than one rebuild.
+#
+#   docker compose -f deploy/compose/docker-compose.yml \
+#                  -f deploy/compose/docker-compose.dev.yml up --build
+#
+# The image still ships the embedded console; this only shadows it at runtime.
+
+services:
+  dbiam:
+    environment:
+      DBIAM_WEB_DIR: /web
+    volumes:
+      - ../../internal/server/web:/web:ro

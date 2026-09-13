@@ -66,10 +66,12 @@ type Rows interface {
 // Cursor is an opaque incremental-introspection marker.
 type Cursor string
 
-// Scope bounds an introspection to part of a target.
+// Scope bounds an introspection to part of a target, and names the target the
+// resulting resource paths belong to.
 type Scope struct {
+	Target    core.TargetRef
 	Databases []string // empty means every database the connection can reach
-	Schemas   []string // empty means every schema
+	Schemas   []string // empty means every schema except the engine's own
 }
 
 // OnUnsupported is the policy author's instruction for what to do when the

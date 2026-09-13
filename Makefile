@@ -36,6 +36,30 @@ lint: ## Lint, if golangci-lint is installed
 	  && golangci-lint run ./... \
 	  || echo "golangci-lint not installed, skipping"
 
+COMPOSE := docker compose -f deploy/compose/docker-compose.yml
+
+.PHONY: up
+up: ## Start the quickstart stack (postgres + db-iam + console) on 127.0.0.1:8080
+	$(COMPOSE) up --build -d
+	@echo "console: http://127.0.0.1:8080"
+
+.PHONY: up-dev
+up-dev: ## Same, but serve the console from the working tree
+	$(COMPOSE) -f deploy/compose/docker-compose.dev.yml up --build -d
+	@echo "console: http://127.0.0.1:8080 (live from internal/server/web)"
+
+.PHONY: down
+down: ## Stop the stack, keeping the database volume
+	$(COMPOSE) down
+
+.PHONY: down-clean
+down-clean: ## Stop the stack and delete the database volume
+	$(COMPOSE) down -v
+
+.PHONY: logs
+logs:
+	$(COMPOSE) logs -f
+
 .PHONY: tidy
 tidy:
 	go mod tidy

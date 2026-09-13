@@ -1,0 +1,73 @@
+# db-iam quickstart.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   open http://127.0.0.1:8080
+#
+# This stack has no authentication. The console and API reach a privileged
+# database connection, so the published port is bound to the loopback address
+# and must stay there.
+
+name: dbiam
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: dbiam-postgres
+    environment:
+      POSTGRES_USER: dbiam_admin
+      POSTGRES_PASSWORD: demo-not-a-real-secret
+      POSTGRES_DB: app
+      # Demo credentials are fine here because the port is loopback-only and
+      # the data is synthetic. A real target's credential belongs in a secret
+      # store reached through a secretRef, never in an environment variable.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Both flags matter: without -U the check runs as root and reports a
+      # false negative, and the readiness probe is what gates db-iam starting.
+      test: ["CMD-SHELL", "pg_isready -U dbiam_admin -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  dbiam:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: compose-dev
+    container_name: dbiam-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DBIAM_ADDR: ":8080"
+      DBIAM_TARGETS: "demo-pg=postgres://dbiam_admin:demo-not-a-real-secret@postgres:5432/app?sslmode=disable"
+      # sslmode=disable is acceptable only because both ends are inside this
+      # compose network. Any real target uses verify-full.
+    ports:
+      - "127.0.0.1:8080:8080"
+    # The console is embedded in the binary, so there is no third container to
+    # run: one image, one process, one origin, and therefore no CORS. To edit
+    # the console against a running stack without rebuilding, add the dev
+    # override -- see docker-compose.dev.yml.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/dbiam", "version"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  pgdata:

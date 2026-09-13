@@ -20,10 +20,12 @@ linters:
   settings:
     revive:
       rules:
+        # Exported API carries doc comments. Methods on unexported types do
+        # not: requiring them there produces noise, not documentation.
         - name: exported
-          arguments: [checkPrivateReceivers]
 
-exclusions:
-  rules:
-    - path: _test\.go
-      linters: [errcheck]
+  exclusions:
+    rules:
+      # Closing a response body in a test that is about to end adds nothing.
+      - path: _test\.go
+        linters: [errcheck]
