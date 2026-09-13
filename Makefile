@@ -39,14 +39,21 @@ lint: ## Lint, if golangci-lint is installed
 COMPOSE := docker compose -f deploy/compose/docker-compose.yml
 
 .PHONY: up
-up: ## Start the quickstart stack (postgres + db-iam + console) on 127.0.0.1:8080
+up: ## Start the stack: postgres + db-iam api + console
 	$(COMPOSE) up --build -d
-	@echo "console: http://127.0.0.1:8080"
+	@echo
+	@echo "  console   http://127.0.0.1:$${DBIAM_CONSOLE_PORT:-8080}"
+	@echo "  api       http://127.0.0.1:$${DBIAM_API_PORT:-8081}"
+	@echo "  postgres  127.0.0.1:$${DBIAM_PG_PORT:-15432}"
 
 .PHONY: up-dev
-up-dev: ## Same, but serve the console from the working tree
+up-dev: ## Same, but serve the console live from internal/server/web
 	$(COMPOSE) -f deploy/compose/docker-compose.dev.yml up --build -d
-	@echo "console: http://127.0.0.1:8080 (live from internal/server/web)"
+	@echo "console: http://127.0.0.1:$${DBIAM_CONSOLE_PORT:-8080} (live from internal/server/web)"
+
+.PHONY: ps
+ps: ## Show stack status
+	$(COMPOSE) ps
 
 .PHONY: down
 down: ## Stop the stack, keeping the database volume

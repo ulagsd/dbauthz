@@ -1,15 +1,28 @@
 # db-iam quickstart.
 #
-#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   make up                          # or: docker compose -f this-file up --build -d
 #   open http://127.0.0.1:8080
 #
-# This stack has no authentication. The console and API reach a privileged
-# database connection, so the published port is bound to the loopback address
+# Three services: the database being managed, the db-iam API, and the console.
+#
+# This stack has no authentication. The console and API both reach a privileged
+# database connection, so every published port is bound to the loopback address
 # and must stay there.
+#
+# Host ports are overridable, and Postgres deliberately does not default to
+# 5432: a developer running db-iam is very likely to have a local Postgres on
+# it already.
+#
+#   DBIAM_CONSOLE_PORT=9000 make up
 
 name: dbiam
 
 services:
+  # ---------------------------------------------------------------- postgres
+  # The database db-iam manages. Seeded with a deliberately messy estate: a
+  # grant to PUBLIC, a column grant that withholds ssn, a table with row-level
+  # security already on, a NOINHERIT member, and an object owned by another
+  # role. Each is something the solver will have to reason about.
   postgres:
     image: postgres:17-alpine
     container_name: dbiam-postgres
@@ -17,17 +30,18 @@ services:
       POSTGRES_USER: dbiam_admin
       POSTGRES_PASSWORD: demo-not-a-real-secret
       POSTGRES_DB: app
-      # Demo credentials are fine here because the port is loopback-only and
-      # the data is synthetic. A real target's credential belongs in a secret
-      # store reached through a secretRef, never in an environment variable.
+      # Demo credentials are acceptable only because the port is loopback-only
+      # and the data is synthetic. A real target's credential belongs in a
+      # secret store reached through a secretRef, never in the environment.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DBIAM_PG_PORT:-15432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      # Both flags matter: without -U the check runs as root and reports a
-      # false negative, and the readiness probe is what gates db-iam starting.
+      # -U and -d both matter: without them the check runs as root against the
+      # wrong database and reports a false negative, and this probe is what
+      # gates db-iam starting at all.
       test: ["CMD-SHELL", "pg_isready -U dbiam_admin -d app"]
       interval: 3s
       timeout: 3s
@@ -35,34 +49,65 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # ------------------------------------------------------------------- dbiam
+  # The API. Published for curl; the console reaches it over the compose
+  # network, not through this port.
   dbiam:
     build:
       context: ../..
       dockerfile: Dockerfile
       args:
         VERSION: compose-dev
-    container_name: dbiam-server
+    container_name: dbiam-api
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DBIAM_ADDR: ":8080"
       DBIAM_TARGETS: "demo-pg=postgres://dbiam_admin:demo-not-a-real-secret@postgres:5432/app?sslmode=disable"
-      # sslmode=disable is acceptable only because both ends are inside this
+      # sslmode=disable is tolerable only because both ends sit inside this
       # compose network. Any real target uses verify-full.
     ports:
-      - "127.0.0.1:8080:8080"
-    # The console is embedded in the binary, so there is no third container to
-    # run: one image, one process, one origin, and therefore no CORS. To edit
-    # the console against a running stack without rebuilding, add the dev
-    # override -- see docker-compose.dev.yml.
+      - "127.0.0.1:${DBIAM_API_PORT:-8081}:8080"
     healthcheck:
+      # The image is distroless: no shell, no wget, no curl. The dbiam CLI
+      # ships alongside the server precisely so there is something to exec.
       test: ["CMD", "/usr/local/bin/dbiam", "version"]
       interval: 10s
       timeout: 3s
       retries: 3
       start_period: 3s
     read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------- console
+  # Serves the console and reverse-proxies /api to dbiam, so the browser sees a
+  # single origin and there is no CORS policy to maintain.
+  #
+  # The server binary also embeds this console, which stays the right answer
+  # for a single-binary deployment. This container is for stacks that want the
+  # front end released or scaled on its own.
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/console/Dockerfile
+    container_name: dbiam-console
+    depends_on:
+      dbiam:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${DBIAM_CONSOLE_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      # nginx needs somewhere to write temp bodies and its pid under a
+      # read-only root.
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
     security_opt:
       - no-new-privileges:true
     cap_drop:

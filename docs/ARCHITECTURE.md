@@ -566,7 +566,7 @@ Two read APIs deserve emphasis because they are the product's most-used surfaces
 
 ## 16. Deployment topologies
 
-**T1 — Evaluation.** `docker compose up`: control plane + Postgres + seeded demo target + console on `:8080`. No agent; direct connection.
+**T1 — Evaluation.** `docker compose up`: Postgres with a seeded demo estate, the control plane, and the console behind an nginx proxy that keeps the browser on one origin. No agent; direct connection. The control-plane binary embeds the same console, so a single-container variant of this topology needs no front-end service at all.
 
 **T2 — Single-tenant self-hosted.** Control plane (2+ replicas) + external Postgres + OIDC + external secret store. Direct connection where the network allows.
 
