@@ -302,12 +302,80 @@ func TestConsoleIsServedWithHardeningHeaders(t *testing.T) {
 		t.Error("console did not render")
 	}
 	for header, want := range map[string]string{
-		"X-Frame-Options":         "DENY",
-		"X-Content-Type-Options":  "nosniff",
-		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
 	} {
 		if got := resp.Header.Get(header); !strings.Contains(got, want) {
 			t.Errorf("%s = %q, want it to contain %q", header, got, want)
+		}
+	}
+
+	// The policy must name script-src and style-src explicitly. Leaving them
+	// to fall back to default-src is what blocked the console's own script
+	// while the page still rendered, so the absence of a directive is the bug
+	// worth testing for.
+	csp := resp.Header.Get("Content-Security-Policy")
+	for _, directive := range []string{"script-src 'self'", "style-src 'self'", "frame-ancestors 'none'"} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("Content-Security-Policy is missing %q: %s", directive, csp)
+		}
+	}
+	if strings.Contains(csp, "unsafe-inline") {
+		t.Errorf("the console needs no inline script or style; the policy should not allow it: %s", csp)
+	}
+}
+
+// The console is only served if every file it asks for is actually there. An
+// embed that quietly lost app.js would leave the same dead page as the CSP bug.
+func TestConsoleServesItsAssets(t *testing.T) {
+	ts := newTestServer(t, &stubConn{})
+
+	for path, wantType := range map[string]string{
+		"/app.js":  "javascript",
+		"/app.css": "css",
+	} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s: status %d", path, resp.StatusCode)
+			continue
+		}
+		if len(body) == 0 {
+			t.Errorf("GET %s: empty", path)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, wantType) {
+			t.Errorf("GET %s: Content-Type = %q, want %s", path, ct, wantType)
+		}
+	}
+}
+
+// The page must reference the external files, or splitting them achieved
+// nothing and the CSP will block whatever is left inline.
+func TestConsoleHasNoInlineScriptOrStyle(t *testing.T) {
+	ts := newTestServer(t, &stubConn{})
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	page := string(body)
+
+	if strings.Contains(page, "<script>") {
+		t.Error("the page has an inline <script>, which the CSP blocks")
+	}
+	if strings.Contains(page, "<style>") {
+		t.Error("the page has an inline <style>, which the CSP blocks")
+	}
+	for _, want := range []string{`src="app.js"`, `href="app.css"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not load %s", want)
 		}
 	}
 }
