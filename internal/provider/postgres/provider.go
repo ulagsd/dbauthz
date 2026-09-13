@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/ulagsd/db-iam/internal/core"
@@ -17,6 +16,8 @@ func New() *Provider { return &Provider{} }
 // Engine returns the canonical engine id.
 func (pr *Provider) Engine() string { return Engine }
 
+// The policy pipeline's compile and diff stages are not built yet. Role
+// management and introspection are, which is what the API exposes today.
 var errNotImplemented = fmt.Errorf("postgres provider: not implemented yet")
 
 // Compile lowers a portable permission set into PostgreSQL statements.
@@ -26,16 +27,6 @@ func (pr *Provider) Compile(*core.EffectivePermissionSet, core.Capabilities, pro
 
 // Diff produces an ordered plan from desired statements and observed state.
 func (pr *Provider) Diff(*provider.StatementSet, *provider.Snapshot) (*provider.Plan, error) {
-	return nil, errNotImplemented
-}
-
-// Apply executes a plan against the target.
-func (pr *Provider) Apply(context.Context, provider.Querier, *provider.Plan) (*provider.ApplyResult, error) {
-	return nil, errNotImplemented
-}
-
-// Verify re-reads the target and asserts the plan's intent holds.
-func (pr *Provider) Verify(context.Context, provider.Querier, *provider.Plan) (*provider.VerifyResult, error) {
 	return nil, errNotImplemented
 }
 

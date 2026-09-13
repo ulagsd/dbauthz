@@ -38,7 +38,16 @@ func (r Risk) String() string {
 
 // Statement is one engine statement with the context needed to review it.
 type Statement struct {
-	SQL    string
+	// SQL is what executes. It may embed a secret, because DDL cannot take
+	// bind parameters for passwords or identifiers.
+	SQL string
+
+	// Display is what a human sees: the plan view, the API response, the audit
+	// record. When a statement carries a secret this holds the same SQL with
+	// the secret replaced, so reviewing a plan never means reading one.
+	// Empty means SQL is safe to show as-is.
+	Display string
+
 	Risk   Risk
 	Reason string   // why this statement exists, in the operator's terms
 	Origin []string // policy statement ids
@@ -47,6 +56,18 @@ type Statement struct {
 	// lacks, such as a view replacing row-level security. Never silent: the
 	// plan renders these distinctly and the audit record keeps them.
 	Substituted bool
+}
+
+// Redacted returns the reviewable form of the statement, which is Display when
+// the statement carries a secret and SQL otherwise.
+//
+// Everything that shows a statement to a human or writes one to a record goes
+// through this. Reaching for .SQL outside the apply path is the bug.
+func (s Statement) Redacted() string {
+	if s.Display != "" {
+		return s.Display
+	}
+	return s.SQL
 }
 
 // StatementSet is the compiled, not-yet-ordered output of Compile.
@@ -74,6 +95,11 @@ type Plan struct {
 	// Hash covers the statements and the snapshot version. Approval is
 	// recorded against this value.
 	Hash string
+
+	// CreatedRoles names the principals this plan brings into existence, so
+	// Verify can confirm they are really there rather than trusting that the
+	// statements returned no error.
+	CreatedRoles []string
 }
 
 // MaxRisk reports the highest risk in the plan, which decides whether
@@ -136,7 +162,7 @@ func (p *Plan) Render() string {
 			if s.Substituted {
 				marker = " ~" // stands in for a primitive the engine lacks
 			}
-			pf("%s %s\n", marker, s.SQL)
+			pf("%s %s\n", marker, s.Redacted())
 			if s.Reason != "" {
 				pf("     -- %s\n", s.Reason)
 			}
@@ -163,7 +189,8 @@ type ApplyResult struct {
 	Indeterminate bool
 }
 
-// StatementError pins a failure to the statement that caused it.
+// StatementError pins a failure to the statement that caused it. SQL holds the
+// redacted form: an error is the most likely thing to be pasted into a ticket.
 type StatementError struct {
 	Index int
 	SQL   string

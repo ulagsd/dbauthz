@@ -1,0 +1,53 @@
+# The database db-iam manages, for local development.
+#
+# NOT TRACKED IN GIT. A target is somebody's infrastructure: the host, the
+# credential and the TLS mode are yours, not the project's. This file is where
+# those live so they never reach a commit.
+#
+# Copied from docker-compose.postgres.yml.example by `make up`.
+#
+# To manage a database you already run instead, delete this file and set
+# DBIAM_TARGETS in your environment:
+#
+#   DBIAM_TARGETS="prod=postgres://dbiam@host:5432/app?sslmode=verify-full"
+#
+# The seed under ./initdb creates a deliberately messy demo estate. Point this
+# at anything real and that seed will not run, because docker-entrypoint-initdb
+# only fires on an empty data directory.
+
+name: dbiam
+
+services:
+  # ---------------------------------------------------------------- postgres
+  # The database db-iam manages. Seeded with a deliberately messy estate: a
+  # grant to PUBLIC, a column grant that withholds ssn, a table with row-level
+  # security already on, a NOINHERIT member, and an object owned by another
+  # role. Each is something the solver will have to reason about.
+  postgres:
+    image: postgres:17-alpine
+    container_name: dbiam-postgres
+    environment:
+      POSTGRES_USER: dbiam_admin
+      POSTGRES_PASSWORD: demo-not-a-real-secret
+      POSTGRES_DB: app
+      # Demo credentials are acceptable only because the port is loopback-only
+      # and the data is synthetic. A real target's credential belongs in a
+      # secret store reached through a secretRef, never in the environment.
+    ports:
+      - "127.0.0.1:${DBIAM_PG_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -U and -d both matter: without them the check runs as root against the
+      # wrong database and reports a false negative, and this probe is what
+      # gates db-iam starting at all.
+      test: ["CMD-SHELL", "pg_isready -U dbiam_admin -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

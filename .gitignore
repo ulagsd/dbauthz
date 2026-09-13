@@ -34,3 +34,6 @@ go.work.sum
 # db-iam build output
 /bin/
 coverage.out
+
+# The target database definition is local infrastructure, not project source.
+deploy/compose/docker-compose.postgres.yml

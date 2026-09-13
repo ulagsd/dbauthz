@@ -3,7 +3,13 @@
 #   make up                          # or: docker compose -f this-file up --build -d
 #   open http://127.0.0.1:8080
 #
-# Three services: the database being managed, the db-iam API, and the console.
+# This file defines db-iam itself: the API and the console.
+#
+# The database being managed lives in docker-compose.postgres.yml, which is
+# deliberately not tracked in git. A target is somebody's infrastructure, and
+# how you reach it — host, credential, TLS mode — is local to you. Copy
+# docker-compose.postgres.yml.example to start, or delete it entirely and point
+# DBIAM_TARGETS at a database you already run.
 #
 # This stack has no authentication. The console and API both reach a privileged
 # database connection, so every published port is bound to the loopback address
@@ -18,37 +24,6 @@
 name: dbiam
 
 services:
-  # ---------------------------------------------------------------- postgres
-  # The database db-iam manages. Seeded with a deliberately messy estate: a
-  # grant to PUBLIC, a column grant that withholds ssn, a table with row-level
-  # security already on, a NOINHERIT member, and an object owned by another
-  # role. Each is something the solver will have to reason about.
-  postgres:
-    image: postgres:17-alpine
-    container_name: dbiam-postgres
-    environment:
-      POSTGRES_USER: dbiam_admin
-      POSTGRES_PASSWORD: demo-not-a-real-secret
-      POSTGRES_DB: app
-      # Demo credentials are acceptable only because the port is loopback-only
-      # and the data is synthetic. A real target's credential belongs in a
-      # secret store reached through a secretRef, never in the environment.
-    ports:
-      - "127.0.0.1:${DBIAM_PG_PORT:-15432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./initdb:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      # -U and -d both matter: without them the check runs as root against the
-      # wrong database and reports a false negative, and this probe is what
-      # gates db-iam starting at all.
-      test: ["CMD-SHELL", "pg_isready -U dbiam_admin -d app"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-    restart: unless-stopped
-
   # ------------------------------------------------------------------- dbiam
   # The API. Published for curl; the console reaches it over the compose
   # network, not through this port.
@@ -62,6 +37,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        # Declared here but satisfied by docker-compose.postgres.yml. Drop this
+        # block if you point DBIAM_TARGETS at a database outside the stack.
     environment:
       DBIAM_ADDR: ":8080"
       DBIAM_TARGETS: "demo-pg=postgres://dbiam_admin:demo-not-a-real-secret@postgres:5432/app?sslmode=disable"
@@ -113,6 +90,3 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
-
-volumes:
-  pgdata:

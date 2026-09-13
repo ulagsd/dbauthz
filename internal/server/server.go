@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ulagsd/db-iam/internal/audit"
 	"github.com/ulagsd/db-iam/internal/config"
 	"github.com/ulagsd/db-iam/internal/core"
 	"github.com/ulagsd/db-iam/internal/pgconn"
@@ -42,6 +43,7 @@ type Server struct {
 	registry *provider.Registry
 	log      *slog.Logger
 	dial     DialFunc
+	audit    *audit.Log
 
 	mu    sync.Mutex
 	conns map[string]TargetConn // lazily opened, keyed by target id
@@ -58,6 +60,7 @@ func New(cfg config.Config, reg *provider.Registry, log *slog.Logger) *Server {
 func NewWithDialer(cfg config.Config, reg *provider.Registry, log *slog.Logger, dial DialFunc) *Server {
 	return &Server{
 		cfg: cfg, registry: reg, log: log, dial: dial,
+		audit: audit.New(),
 		conns: map[string]TargetConn{},
 	}
 }
@@ -85,6 +88,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/targets", s.handleTargets)
 	mux.HandleFunc("GET /api/v1/targets/{id}/capabilities", s.handleCapabilities)
 	mux.HandleFunc("GET /api/v1/targets/{id}/snapshot", s.handleSnapshot)
+	mux.HandleFunc("POST /api/v1/targets/{id}/users", s.handleCreateUser)
+	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	mux.Handle("/", consoleHandler())
 
 	return s.withLogging(mux)
@@ -269,6 +274,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+// contextWithTimeout bounds a handler's work against the request's own context.
+func contextWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), d)
 }
 
 func writeError(w http.ResponseWriter, err error) {

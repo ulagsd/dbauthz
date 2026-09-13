@@ -36,10 +36,18 @@ lint: ## Lint, if golangci-lint is installed
 	  && golangci-lint run ./... \
 	  || echo "golangci-lint not installed, skipping"
 
-COMPOSE := docker compose -f deploy/compose/docker-compose.yml
+COMPOSE_DIR := deploy/compose
+# The target database lives in its own untracked file, so a fresh clone is
+# seeded from the example rather than failing.
+PG_COMPOSE  := $(COMPOSE_DIR)/docker-compose.postgres.yml
+COMPOSE     := docker compose -f $(COMPOSE_DIR)/docker-compose.yml -f $(PG_COMPOSE)
+
+$(PG_COMPOSE):
+	@echo "creating $@ from the example (untracked, edit it freely)"
+	@cp $(PG_COMPOSE).example $@
 
 .PHONY: up
-up: ## Start the stack: postgres + db-iam api + console
+up: $(PG_COMPOSE) ## Start the stack: postgres + db-iam api + console
 	$(COMPOSE) up --build -d
 	@echo
 	@echo "  console   http://127.0.0.1:$${DBIAM_CONSOLE_PORT:-8080}"
@@ -47,8 +55,8 @@ up: ## Start the stack: postgres + db-iam api + console
 	@echo "  postgres  127.0.0.1:$${DBIAM_PG_PORT:-15432}"
 
 .PHONY: up-dev
-up-dev: ## Same, but serve the console live from internal/server/web
-	$(COMPOSE) -f deploy/compose/docker-compose.dev.yml up --build -d
+up-dev: $(PG_COMPOSE) ## Same, but serve the console live from internal/server/web
+	$(COMPOSE) -f $(COMPOSE_DIR)/docker-compose.dev.yml up --build -d
 	@echo "console: http://127.0.0.1:$${DBIAM_CONSOLE_PORT:-8080} (live from internal/server/web)"
 
 .PHONY: ps

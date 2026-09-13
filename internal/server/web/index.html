@@ -66,6 +66,32 @@
   .kv dt { color: var(--muted); font-size: 12.5px; }
   .kv dd { margin: 0; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 4px 0; }
+  form { display: grid; gap: 14px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: grid; gap: 4px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  input[type=text], input[type=password], input[type=number], select {
+    font: inherit; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--ink); min-width: 180px;
+  }
+  select[multiple] { min-height: 84px; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 13px; padding-bottom: 7px; }
+  button {
+    font: inherit; font-weight: 500; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  pre {
+    margin: 0; padding: 10px 12px; background: var(--chip); border-radius: 6px;
+    overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .ok { color: var(--accent); }
+  .reveal {
+    border: 1px solid var(--warn); border-radius: 6px; padding: 10px 12px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
 </style>
 </head>
 <body>
@@ -82,6 +108,46 @@
   <section>
     <h2>Capabilities <span class="muted" style="text-transform:none;letter-spacing:0">— probed, not inferred</span></h2>
     <div class="body" id="caps">loading…</div>
+  </section>
+
+  <section>
+    <h2>Create role</h2>
+    <div class="body">
+      <form id="roleform" autocomplete="off">
+        <div class="row">
+          <div class="field">
+            <label for="f-name">Name</label>
+            <input type="text" id="f-name" required placeholder="alice" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-password">Password <span class="muted">— blank to generate</span></label>
+            <input type="password" id="f-password" placeholder="generated" autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label for="f-limit">Connection limit</label>
+            <input type="number" id="f-limit" value="-1" min="-1" step="1">
+          </div>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="f-login" checked> can log in</label>
+          <label class="check"><input type="checkbox" id="f-inherit" checked> inherits membership privileges</label>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="f-memberof">Member of <span class="muted">— optional, multi-select</span></label>
+            <select id="f-memberof" multiple></select>
+          </div>
+        </div>
+        <div class="row">
+          <button type="button" id="f-plan" class="secondary">Preview plan</button>
+          <button type="submit" id="f-create">Create role</button>
+        </div>
+      </form>
+      <div id="roleresult" style="margin-top:14px"></div>
+      <p class="note">The password is turned into a SCRAM-SHA-256 verifier here, and only the
+        verifier is sent. The plaintext never reaches the server, its log, or
+        <span class="mono">pg_stat_activity</span>.</p>
+    </div>
   </section>
 
   <section>
@@ -103,6 +169,11 @@
     <h2>Objects</h2>
     <div class="body" id="objects">loading…</div>
   </section>
+
+  <section>
+    <h2>Audit</h2>
+    <div class="body" id="audit">loading…</div>
+  </section>
 </main>
 
 <script>
@@ -114,6 +185,17 @@ async function get(path) {
   const r = await fetch(path);
   const body = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
   if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+  return body;
+}
+
+async function post(path, payload) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
+  if (!r.ok) { const e = new Error(body.error || `${r.status} ${r.statusText}`); e.body = body; throw e; }
   return body;
 }
 
@@ -213,6 +295,43 @@ function renderObjects(s) {
     <tbody>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</tbody></table>`;
 }
 
+function renderAudit(a) {
+  if (!a.count) {
+    $("audit").innerHTML = `<p class="muted">Nothing recorded yet.</p>`;
+    return;
+  }
+  const rows = a.records.map(r => `<tr>
+    <td class="mono">${esc(r.seq)}</td>
+    <td class="mono muted">${esc(r.at.replace("T", " ").slice(0, 19))}</td>
+    <td class="mono">${esc(r.action)}</td>
+    <td class="mono">${esc(r.intent?.name ?? "—")}</td>
+    <td>${r.effect?.error
+        ? `<span class="err">failed</span>`
+        : `<span class="ok">${esc(r.effect?.executed ?? 0)} statements</span>`}</td>
+    <td class="mono muted" title="${esc(r.hash)}">${esc(r.hash.slice(0, 12))}…</td>
+  </tr>`).join("");
+
+  $("audit").innerHTML = `
+    <p class="${a.chain_valid ? "ok" : "err"}" style="margin-top:0">
+      ${a.chain_valid ? "&#10003; hash chain intact" : "&#10007; hash chain broken: " + esc(a.chain_error)}
+      <span class="muted">· ${esc(a.count)} record(s)</span>
+    </p>
+    <table>
+      <thead><tr><th>#</th><th>at</th><th>action</th><th>subject</th><th>effect</th><th>hash</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="note">${esc(a.note)}</p>`;
+}
+
+function renderPlan(plan, heading) {
+  const lines = plan.statements.map(st =>
+    `<span class="muted">-- ${esc(st.reason)}</span>\n${esc(st.sql)};`).join("\n\n");
+  return `<p class="muted" style="margin:0 0 6px">${esc(heading)}
+      &middot; max risk <b>${esc(plan.max_risk)}</b>
+      &middot; <span class="mono">${esc(plan.hash.slice(0, 12))}…</span></p>
+    <pre>${lines}</pre>`;
+}
+
 function fail(id, err) {
   $(id).innerHTML = `<p class="err">${esc(err.message)}</p>`;
 }
@@ -235,9 +354,79 @@ function fail(id, err) {
   get(`/api/v1/targets/${encodeURIComponent(target.id)}/capabilities`)
     .then(renderCaps).catch(e => fail("caps", e));
 
-  get(`/api/v1/targets/${encodeURIComponent(target.id)}/snapshot`)
-    .then(s => { renderSummary(s); renderRoles(s); renderGrants(s); renderObjects(s); })
-    .catch(e => { for (const id of ["summary","roles","grants","objects"]) fail(id, e); });
+  const refreshSnapshot = () =>
+    get(`/api/v1/targets/${encodeURIComponent(target.id)}/snapshot`)
+      .then(s => {
+        renderSummary(s); renderRoles(s); renderGrants(s); renderObjects(s);
+        // Keep the "member of" choices in step with what actually exists.
+        const sel = $("f-memberof");
+        const chosen = new Set([...sel.selectedOptions].map(o => o.value));
+        sel.innerHTML = s.principals
+          .map(p => `<option value="${esc(p.name)}"${chosen.has(p.name) ? " selected" : ""}>${esc(p.name)}</option>`)
+          .join("");
+      })
+      .catch(e => { for (const id of ["summary","roles","grants","objects"]) fail(id, e); });
+
+  const refreshAudit = () => get("/api/v1/audit").then(renderAudit).catch(e => fail("audit", e));
+
+  refreshSnapshot();
+  refreshAudit();
+
+  // --- create role -------------------------------------------------------
+  const form = $("roleform");
+  const out  = $("roleresult");
+
+  function payload(dryRun) {
+    return {
+      name: $("f-name").value.trim(),
+      login: $("f-login").checked,
+      inherit: $("f-inherit").checked,
+      password: $("f-password").value,   // empty asks the server to generate one
+      connection_limit: parseInt($("f-limit").value, 10),
+      member_of: [...$("f-memberof").selectedOptions].map(o => o.value),
+      dry_run: dryRun,
+    };
+  }
+
+  async function submit(dryRun) {
+    const buttons = [$("f-plan"), $("f-create")];
+    buttons.forEach(b => b.disabled = true);
+    out.innerHTML = `<p class="muted">working…</p>`;
+    try {
+      const res = await post(`/api/v1/targets/${encodeURIComponent(target.id)}/users`, payload(dryRun));
+      let html = renderPlan(res.plan, dryRun ? "Planned, nothing applied" : "Applied");
+
+      if (res.generated_password) {
+        // Shown once. db-iam keeps no copy, and PostgreSQL stores only a
+        // verifier, so there is nothing to read it back from.
+        html += `<div class="reveal" style="margin-top:12px">
+          <b>Generated password — shown once</b>
+          <pre style="margin-top:6px">${esc(res.generated_password)}</pre>
+          <span class="muted">Nothing stores this. Close the page and it is gone.</span>
+        </div>`;
+      }
+      if (res.applied) {
+        html += `<p class="${res.verified ? "ok" : "substitute"}" style="margin-bottom:0">
+          ${res.verified ? "&#10003; created and verified against the database"
+                         : "created, but could not be verified"}</p>`;
+      }
+      for (const wmsg of res.warnings || []) html += `<p class="note">${esc(wmsg)}</p>`;
+      out.innerHTML = html;
+
+      if (res.applied) { $("f-password").value = ""; refreshSnapshot(); }
+      refreshAudit();
+    } catch (e) {
+      let html = `<p class="err">${esc(e.message)}</p>`;
+      if (e.body?.plan) html += renderPlan(e.body.plan, "Plan that failed");
+      out.innerHTML = html;
+      refreshAudit();
+    } finally {
+      buttons.forEach(b => b.disabled = false);
+    }
+  }
+
+  $("f-plan").addEventListener("click", () => submit(true));
+  form.addEventListener("submit", (ev) => { ev.preventDefault(); submit(false); });
 })();
 </script>
 </body>

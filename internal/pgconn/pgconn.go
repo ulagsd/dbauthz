@@ -74,3 +74,34 @@ func (r *pgxRows) Err() error             { return r.rows.Err() }
 func (r *pgxRows) Close()                 { r.rows.Close() }
 
 var _ provider.Querier = (*Pool)(nil)
+
+// Begin starts a transaction.
+//
+// PostgreSQL can roll back DDL, which is what lets an apply be all-or-nothing.
+func (p *Pool) Begin(ctx context.Context) (provider.Tx, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pgxTx{tx: tx}, nil
+}
+
+type pgxTx struct{ tx pgx.Tx }
+
+func (t *pgxTx) Query(ctx context.Context, sql string, args ...any) (provider.Rows, error) {
+	rows, err := t.tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return &pgxRows{rows: rows}, nil
+}
+
+func (t *pgxTx) Exec(ctx context.Context, sql string, args ...any) error {
+	_, err := t.tx.Exec(ctx, sql, args...)
+	return err
+}
+
+func (t *pgxTx) Commit(ctx context.Context) error   { return t.tx.Commit(ctx) }
+func (t *pgxTx) Rollback(ctx context.Context) error { return t.tx.Rollback(ctx) }
+
+var _ provider.Beginner = (*Pool)(nil)

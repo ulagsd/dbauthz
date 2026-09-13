@@ -27,6 +27,12 @@ Three containers:
 | `dbiam` | `127.0.0.1:8081` | the API, for `curl` |
 | `postgres` | `127.0.0.1:15432` | the database being managed |
 
+The Postgres service lives in `deploy/compose/docker-compose.postgres.yml`,
+which is **not tracked in git** — a target is your infrastructure, and its host,
+credential and TLS mode are not the project's business. `make up` creates it
+from the committed `.example` on first run. Delete it and point
+`DBIAM_TARGETS` at a database you already run instead.
+
 Every port is loopback-bound, and Postgres deliberately avoids 5432 since a
 developer is likely to have one there already. Override with
 `DBIAM_CONSOLE_PORT`, `DBIAM_API_PORT`, `DBIAM_PG_PORT`.
@@ -53,10 +59,28 @@ because every one of those is something the solver will have to reason about.
 | `internal/core` | Resource paths, action vocabulary, capability model, row-filter predicate AST. Engine-neutral; may not import a driver. |
 | `internal/provider` | The contract every engine implements. |
 | `internal/provider/postgres` | Capability probe (RDS, Aurora, Cloud SQL, Azure, Neon, Supabase, Timescale) and catalog introspection. |
-| `internal/server` | Evaluation HTTP API and the embedded console. |
+| `internal/server` | Evaluation HTTP API and the console. |
+| `internal/secret` | Password generation and a type that resists being logged. |
+| `internal/audit` | Hash-chained records. In memory for now, so not durable. |
 
-Not yet: the solver, `Compile`, `Diff`, `Apply`, `Verify`, policy documents,
-authentication, tenancy, audit.
+### API
+
+| | |
+|---|---|
+| `GET /api/v1/targets` | configured targets, connection strings redacted |
+| `GET /api/v1/targets/{id}/capabilities` | the probed capability profile |
+| `GET /api/v1/targets/{id}/snapshot` | roles, objects and grants as they are |
+| `POST /api/v1/targets/{id}/users` | create a role — `"dry_run": true` returns the plan only |
+| `GET /api/v1/audit` | the record chain |
+| `GET /api/v1/actions` | the canonical action vocabulary |
+
+A password given to `POST .../users` is turned into a SCRAM-SHA-256 verifier
+before anything is sent, so the plaintext never reaches the server, its log, or
+`pg_stat_activity`. Omit it and one is generated and returned exactly once —
+db-iam keeps no copy and PostgreSQL stores only a verifier.
+
+Not yet: the solver, `Compile`, `Diff`, policy documents, authentication,
+tenancy, durable audit.
 
 ## Development
 
