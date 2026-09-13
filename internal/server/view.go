@@ -11,13 +11,6 @@ import (
 // console is a client like any other, and letting it read internal structs
 // directly is how private fields end up in a browser.
 
-type principalView struct {
-	Name     string   `json:"name"`
-	Login    bool     `json:"login"`
-	Inherit  bool     `json:"inherit"`
-	MemberOf []string `json:"member_of"`
-}
-
 type objectView struct {
 	Path    string   `json:"path"`
 	Kind    string   `json:"kind"`
@@ -62,7 +55,7 @@ type snapshotResponse struct {
 	Grants     []grantView     `json:"grants"`
 }
 
-func snapshotView(s *provider.Snapshot) snapshotResponse {
+func snapshotView(s *provider.Snapshot, connectedRole string) snapshotResponse {
 	out := snapshotResponse{
 		Target:     s.Target.Name,
 		Version:    s.Version,
@@ -73,10 +66,7 @@ func snapshotView(s *provider.Snapshot) snapshotResponse {
 	}
 
 	for _, p := range s.Principals {
-		out.Principals = append(out.Principals, principalView{
-			Name: p.Name, Login: p.Login, Inherit: p.Inherit,
-			MemberOf: nonNil(p.MemberOf),
-		})
+		out.Principals = append(out.Principals, principalToView(p, connectedRole))
 	}
 
 	for _, o := range s.Objects {

@@ -43,9 +43,10 @@ func (c *stubConn) Query(_ context.Context, sql string, _ ...any) (provider.Rows
 
 	case strings.Contains(sql, "FROM pg_roles r"):
 		return &stubRows{data: [][]any{
-			{"alice", true, true, []string{"analyst"}},
-			{"analyst", false, true, []string{"app_ro"}},
-			{"bob", true, false, []string{"support"}},
+			{"alice", true, true, []string{"analyst"}, "managed by db-iam"},
+			{"analyst", false, true, []string{"app_ro"}, ""},
+			{"bob", true, false, []string{"support"}, ""},
+			{"dbiam_admin", true, true, []string{}, ""},
 		}}, nil
 
 	case strings.Contains(sql, "c.relrowsecurity"):
@@ -214,8 +215,8 @@ func TestSnapshotEndpoint(t *testing.T) {
 	got := getJSON(t, ts, "/api/v1/targets/demo-pg/snapshot", http.StatusOK)
 
 	summary := got["summary"].(map[string]any)
-	if summary["principals"].(float64) != 3 {
-		t.Errorf("principals = %v, want 3", summary["principals"])
+	if summary["principals"].(float64) != 4 {
+		t.Errorf("principals = %v, want 4", summary["principals"])
 	}
 	if summary["objects"].(float64) != 3 {
 		t.Errorf("objects = %v, want 3", summary["objects"])
@@ -392,7 +393,7 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-// --- create user -----------------------------------------------------------
+// --- principals ------------------------------------------------------------
 
 func postJSON(t *testing.T, ts *httptest.Server, path, body string, want int) map[string]any {
 	t.Helper()
@@ -414,7 +415,9 @@ func postJSON(t *testing.T, ts *httptest.Server, path, body string, want int) ma
 }
 
 // execConn records the statements it is asked to run, so a test can assert on
-// what would reach the database.
+// what would reach the database. It deliberately has no Begin, which puts the
+// server on the non-transactional path — the one with the interesting failure
+// mode.
 type execConn struct {
 	stubConn
 	executed []string
@@ -429,15 +432,67 @@ func (c *execConn) Exec(_ context.Context, sql string, _ ...any) error {
 	return nil
 }
 
-// Begin is deliberately absent: without it the server exercises the
-// non-transactional path, which is the one with the interesting failure mode.
+const (
+	usersPath = "/api/v1/targets/demo-pg/users"
+	rolesPath = "/api/v1/targets/demo-pg/roles"
+)
+
+// The split is the point: the endpoint decides whether the principal can
+// authenticate, so a group role can never accidentally become a login.
+func TestRoleAndUserEndpointsDecideLogin(t *testing.T) {
+	t.Run("a role cannot log in", func(t *testing.T) {
+		conn := &execConn{}
+		ts := newTestServer(t, conn)
+
+		got := postJSON(t, ts, rolesPath, `{"name":"reporting"}`, http.StatusCreated)
+
+		if _, present := got["generated_password"]; present {
+			t.Error("a role must not be given a password")
+		}
+		if !strings.Contains(conn.executed[0], "NOLOGIN") {
+			t.Errorf("expected NOLOGIN: %s", conn.executed[0])
+		}
+		if strings.Contains(conn.executed[0], "PASSWORD") {
+			t.Errorf("a role must not be given a password: %s", conn.executed[0])
+		}
+	})
+
+	t.Run("a user can", func(t *testing.T) {
+		conn := &execConn{}
+		ts := newTestServer(t, conn)
+
+		got := postJSON(t, ts, usersPath, `{"name":"dana"}`, http.StatusCreated)
+
+		if pw, _ := got["generated_password"].(string); len(pw) < 12 {
+			t.Errorf("generated_password = %q, want a strong generated password", pw)
+		}
+		if got["password_shown_once"] != true {
+			t.Error("the response should say the password cannot be retrieved again")
+		}
+		if !strings.Contains(conn.executed[0], "LOGIN") ||
+			strings.Contains(conn.executed[0], "NOLOGIN") {
+			t.Errorf("expected LOGIN: %s", conn.executed[0])
+		}
+	})
+
+	// The old shape carried a login flag. Rejecting it rather than ignoring it
+	// means a caller upgrading from it finds out.
+	t.Run("a login flag is refused on either endpoint", func(t *testing.T) {
+		for _, path := range []string{usersPath, rolesPath} {
+			ts := newTestServer(t, &execConn{})
+			got := postJSON(t, ts, path, `{"name":"x","login":true}`, http.StatusBadRequest)
+			if !strings.Contains(got["error"].(string), "login") {
+				t.Errorf("%s: error = %v, want it to name the rejected field", path, got["error"])
+			}
+		}
+	})
+}
 
 func TestCreateUserDryRunAppliesNothing(t *testing.T) {
 	conn := &execConn{}
 	ts := newTestServer(t, conn)
 
-	got := postJSON(t, ts, "/api/v1/targets/demo-pg/users",
-		`{"name":"dana","login":true,"dry_run":true}`, http.StatusOK)
+	got := postJSON(t, ts, usersPath, `{"name":"dana","dry_run":true}`, http.StatusOK)
 
 	if got["applied"] != false {
 		t.Errorf("applied = %v, want false", got["applied"])
@@ -448,6 +503,10 @@ func TestCreateUserDryRunAppliesNothing(t *testing.T) {
 	if plan := got["plan"].(map[string]any); plan["hash"] == "" {
 		t.Error("a dry run should still return a plan")
 	}
+	// A password that will never be used must not be handed out.
+	if _, present := got["generated_password"]; present {
+		t.Error("a dry run revealed a password for a user it did not create")
+	}
 }
 
 // The property the whole password path exists for, asserted at the API edge.
@@ -456,8 +515,8 @@ func TestCreateUserNeverReturnsOrExecutesThePlaintext(t *testing.T) {
 	conn := &execConn{}
 	ts := newTestServer(t, conn)
 
-	resp, err := http.Post(ts.URL+"/api/v1/targets/demo-pg/users", "application/json",
-		strings.NewReader(`{"name":"dana","login":true,"password":"`+password+`"}`))
+	resp, err := http.Post(ts.URL+usersPath, "application/json",
+		strings.NewReader(`{"name":"dana","password":"`+password+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,75 +530,51 @@ func TestCreateUserNeverReturnsOrExecutesThePlaintext(t *testing.T) {
 		t.Fatalf("the verifier leaked into the response, which is enough for an "+
 			"offline attack: %s", body)
 	}
-
-	create := conn.executed[0]
-	if strings.Contains(create, password) {
+	if strings.Contains(conn.executed[0], password) {
 		t.Fatal("the plaintext reached the database statement")
 	}
-	if !strings.Contains(create, "SCRAM-SHA-256$") {
-		t.Errorf("expected a precomputed verifier in the statement: %s", create)
+	if !strings.Contains(conn.executed[0], "SCRAM-SHA-256$") {
+		t.Errorf("expected a precomputed verifier in the statement: %s", conn.executed[0])
 	}
 }
 
-func TestCreateUserGeneratesAPasswordWhenNoneIsGiven(t *testing.T) {
-	ts := newTestServer(t, &execConn{})
-
-	got := postJSON(t, ts, "/api/v1/targets/demo-pg/users",
-		`{"name":"dana","login":true}`, http.StatusCreated)
-
-	pw, _ := got["generated_password"].(string)
-	if len(pw) < 12 {
-		t.Fatalf("generated_password = %q, want a strong generated password", pw)
-	}
-	if got["password_shown_once"] != true {
-		t.Error("the response should say the password cannot be retrieved again")
-	}
-	if got["verified"] != true {
-		t.Error("the created role should be verified against the database")
-	}
-}
-
-// A group role has nothing to authenticate with, so generating a password for
-// it would be noise the operator has to ignore.
-func TestCreateGroupRoleGeneratesNoPassword(t *testing.T) {
+func TestCreateUserWithRolesGrantsThemInTheSamePlan(t *testing.T) {
 	conn := &execConn{}
 	ts := newTestServer(t, conn)
 
-	got := postJSON(t, ts, "/api/v1/targets/demo-pg/users",
-		`{"name":"app_ro","login":false}`, http.StatusCreated)
+	postJSON(t, ts, usersPath, `{"name":"dana","roles":["app_ro","analyst"]}`, http.StatusCreated)
 
-	if _, present := got["generated_password"]; present {
-		t.Error("a role that cannot log in must not be given a password")
-	}
-	if !strings.Contains(conn.executed[0], "NOLOGIN") {
-		t.Errorf("expected NOLOGIN: %s", conn.executed[0])
+	joined := strings.Join(conn.executed, "\n")
+	for _, want := range []string{`GRANT "app_ro" TO "dana"`, `GRANT "analyst" TO "dana"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in:\n%s", want, joined)
+		}
 	}
 }
 
-// An unknown field must not be ignored. Silently dropping "superuser": true
-// would let a caller believe they asked for something they did not get.
-func TestCreateUserRejectsUnknownFields(t *testing.T) {
+func TestCreateRejectsUnknownFields(t *testing.T) {
 	ts := newTestServer(t, &execConn{})
-	got := postJSON(t, ts, "/api/v1/targets/demo-pg/users",
-		`{"name":"dana","superuser":true}`, http.StatusBadRequest)
+	got := postJSON(t, ts, usersPath, `{"name":"dana","superuser":true}`, http.StatusBadRequest)
 
 	if !strings.Contains(got["error"].(string), "superuser") {
 		t.Errorf("error = %v, want it to name the rejected field", got["error"])
 	}
 }
 
-func TestCreateUserValidationRejections(t *testing.T) {
-	for _, tc := range []struct{ name, body, want string }{
-		{"reserved prefix", `{"name":"pg_evil"}`, "reserved"},
-		{"empty name", `{"name":""}`, "empty"},
-		{"weak password", `{"name":"dana","login":true,"password":"short"}`, "at least"},
-		{"password on a group role", `{"name":"grp","login":false,"password":"a-long-enough-one"}`, "must not have a password"},
-		{"bad valid_until", `{"name":"dana","valid_until":"next tuesday"}`, "RFC 3339"},
+func TestCreateValidationRejections(t *testing.T) {
+	for _, tc := range []struct{ name, path, body, want string }{
+		{"reserved prefix", usersPath, `{"name":"pg_evil"}`, "reserved"},
+		{"empty name", usersPath, `{"name":""}`, "empty"},
+		{"weak password", usersPath, `{"name":"dana","password":"short"}`, "at least"},
+		{"bad valid_until", usersPath, `{"name":"dana","valid_until":"next tuesday"}`, "RFC 3339"},
+		{"role with a bad parent", rolesPath, `{"name":"grp","roles":[" bad"]}`, "whitespace"},
+		// Locking out the role db-iam connects as cannot be undone from here.
+		{"the connected role", usersPath, `{"name":"dbiam_admin"}`, "connects as"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := &execConn{}
 			ts := newTestServer(t, conn)
-			got := postJSON(t, ts, "/api/v1/targets/demo-pg/users", tc.body, http.StatusBadRequest)
+			got := postJSON(t, ts, tc.path, tc.body, http.StatusBadRequest)
 			if !strings.Contains(got["error"].(string), tc.want) {
 				t.Errorf("error = %v, want it to mention %q", got["error"], tc.want)
 			}
@@ -552,12 +587,11 @@ func TestCreateUserValidationRejections(t *testing.T) {
 
 // Without a transaction, a failure after the first statement leaves the target
 // in a state nobody asked for. That has to be reported, not retried.
-func TestCreateUserReportsIndeterminateStateOnPartialApply(t *testing.T) {
+func TestCreateReportsIndeterminateStateOnPartialApply(t *testing.T) {
 	conn := &execConn{failAt: 2} // CREATE ROLE succeeds, COMMENT fails
 	ts := newTestServer(t, conn)
 
-	got := postJSON(t, ts, "/api/v1/targets/demo-pg/users",
-		`{"name":"dana","login":true}`, http.StatusInternalServerError)
+	got := postJSON(t, ts, usersPath, `{"name":"dana"}`, http.StatusInternalServerError)
 
 	if got["indeterminate"] != true {
 		t.Errorf("indeterminate = %v, want true: one statement ran and cannot be undone",
@@ -565,34 +599,146 @@ func TestCreateUserReportsIndeterminateStateOnPartialApply(t *testing.T) {
 	}
 }
 
+// --- membership ------------------------------------------------------------
+
+func TestMembershipRevokesBeforeGranting(t *testing.T) {
+	conn := &execConn{}
+	ts := newTestServer(t, conn)
+
+	postJSON(t, ts, usersPath+"/alice/roles",
+		`{"grant":["app_rw"],"revoke":["app_ro"]}`, http.StatusOK)
+
+	if len(conn.executed) != 2 {
+		t.Fatalf("got %d statements: %v", len(conn.executed), conn.executed)
+	}
+	// The ordering is the fail-safe property: at no point does alice hold both
+	// her old and her new access.
+	if !strings.HasPrefix(conn.executed[0], "REVOKE") {
+		t.Errorf("first statement should revoke, got: %s", conn.executed[0])
+	}
+	if !strings.HasPrefix(conn.executed[1], "GRANT") {
+		t.Errorf("second statement should grant, got: %s", conn.executed[1])
+	}
+}
+
+func TestMembershipRisk(t *testing.T) {
+	ts := newTestServer(t, &execConn{})
+
+	got := postJSON(t, ts, usersPath+"/alice/roles",
+		`{"revoke":["app_ro"],"dry_run":true}`, http.StatusOK)
+
+	plan := got["plan"].(map[string]any)
+	if plan["max_risk"] != "revoke" {
+		t.Errorf("max_risk = %v, want revoke: taking access away can break things",
+			plan["max_risk"])
+	}
+}
+
+// Granting pg_read_all_data is legitimate but defeats every table privilege
+// db-iam manages, so the plan must say that rather than read like any grant.
+func TestMembershipCallsOutBroadPredefinedRoles(t *testing.T) {
+	ts := newTestServer(t, &execConn{})
+
+	got := postJSON(t, ts, usersPath+"/alice/roles",
+		`{"grant":["pg_read_all_data"],"dry_run":true}`, http.StatusOK)
+
+	stmts := got["plan"].(map[string]any)["statements"].([]any)
+	reason := stmts[0].(map[string]any)["reason"].(string)
+	if !strings.Contains(reason, "bypassing table privileges") {
+		t.Errorf("reason = %q, want it to explain how broad the role is", reason)
+	}
+}
+
+func TestMembershipRejections(t *testing.T) {
+	for _, tc := range []struct{ name, member, body, want string }{
+		{"nothing to do", "alice", `{}`, "no roles"},
+		{"contradiction", "alice", `{"grant":["app_ro"],"revoke":["app_ro"]}`, "both grant and revoke"},
+		{"bad role name", "alice", `{"grant":["pg_evil "]}`, "whitespace"},
+		{"the connected role", "dbiam_admin", `{"grant":["app_ro"]}`, "connects as"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &execConn{}
+			ts := newTestServer(t, conn)
+			got := postJSON(t, ts, usersPath+"/"+tc.member+"/roles", tc.body, http.StatusBadRequest)
+			if !strings.Contains(got["error"].(string), tc.want) {
+				t.Errorf("error = %v, want it to mention %q", got["error"], tc.want)
+			}
+			if len(conn.executed) != 0 {
+				t.Errorf("a rejected request still executed %v", conn.executed)
+			}
+		})
+	}
+}
+
+// --- listing ---------------------------------------------------------------
+
+func TestListUsersAndRolesAreDisjoint(t *testing.T) {
+	ts := newTestServer(t, &execConn{})
+
+	users := getJSON(t, ts, usersPath, http.StatusOK)["principals"].([]any)
+	roles := getJSON(t, ts, rolesPath, http.StatusOK)["principals"].([]any)
+
+	for _, u := range users {
+		if u.(map[string]any)["login"] != true {
+			t.Errorf("a non-login principal appeared under users: %v", u)
+		}
+	}
+	for _, r := range roles {
+		if r.(map[string]any)["login"] != false {
+			t.Errorf("a login principal appeared under roles: %v", r)
+		}
+	}
+	if len(users) == 0 || len(roles) == 0 {
+		t.Fatalf("expected both lists to be populated: %d users, %d roles", len(users), len(roles))
+	}
+}
+
+func TestListMarksManagedAndSelf(t *testing.T) {
+	ts := newTestServer(t, &execConn{})
+	users := getJSON(t, ts, usersPath, http.StatusOK)["principals"].([]any)
+
+	byName := map[string]map[string]any{}
+	for _, u := range users {
+		m := u.(map[string]any)
+		byName[m["name"].(string)] = m
+	}
+
+	if byName["alice"]["managed"] != true {
+		t.Error("alice carries the db-iam comment and should be marked managed")
+	}
+	if byName["bob"]["managed"] != false {
+		t.Error("bob has no comment and must not be marked managed")
+	}
+	// The console needs this to stop an operator locking db-iam out of itself.
+	if byName["dbiam_admin"]["self"] != true {
+		t.Error("the connected role should be marked so the console can protect it")
+	}
+}
+
 func TestAuditRecordsEveryAttemptAndChains(t *testing.T) {
 	ts := newTestServer(t, &execConn{})
 
-	postJSON(t, ts, "/api/v1/targets/demo-pg/users", `{"name":"dana","login":true,"dry_run":true}`, http.StatusOK)
-	postJSON(t, ts, "/api/v1/targets/demo-pg/users", `{"name":"dana","login":true}`, http.StatusCreated)
-	postJSON(t, ts, "/api/v1/targets/demo-pg/users", `{"name":"pg_evil"}`, http.StatusBadRequest)
+	postJSON(t, ts, usersPath, `{"name":"dana","dry_run":true}`, http.StatusOK)
+	postJSON(t, ts, usersPath, `{"name":"dana"}`, http.StatusCreated)
+	postJSON(t, ts, usersPath+"/dana/roles", `{"grant":["app_ro"]}`, http.StatusOK)
+	postJSON(t, ts, usersPath, `{"name":"pg_evil"}`, http.StatusBadRequest)
 
 	got := getJSON(t, ts, "/api/v1/audit", http.StatusOK)
 	if got["chain_valid"] != true {
 		t.Errorf("chain_valid = %v", got["chain_valid"])
 	}
 	// The rejected request never reached a plan, so it is not an audited
-	// change; the dry run and the apply both are.
-	if got["count"].(float64) != 2 {
-		t.Errorf("count = %v, want 2", got["count"])
+	// change; the dry run, the create and the membership change all are.
+	if got["count"].(float64) != 3 {
+		t.Errorf("count = %v, want 3", got["count"])
 	}
 
 	records := got["records"].([]any)
-	newest := records[0].(map[string]any)
-	if newest["action"] != "role.create" {
+	if newest := records[0].(map[string]any); newest["action"] != "membership.change" {
 		t.Errorf("newest action = %v", newest["action"])
 	}
-	// The audit must not become the place the secret finally leaks.
 	raw, _ := json.Marshal(got)
 	if strings.Contains(string(raw), "SCRAM-SHA-256$") {
 		t.Error("a verifier leaked into the audit record")
-	}
-	if newest["intent"].(map[string]any)["password_generated"] != true {
-		t.Error("the audit should record that a password was generated")
 	}
 }

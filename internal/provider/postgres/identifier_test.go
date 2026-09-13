@@ -60,3 +60,33 @@ func TestValidateIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// The two validators differ by exactly one rule, and that difference matters:
+// db-iam must refuse to create a pg_ role but must be able to grant one.
+func TestValidateIdentifierRefAllowsPredefinedRoles(t *testing.T) {
+	for _, name := range []string{"pg_read_all_data", "pg_monitor", "PG_MONITOR"} {
+		if err := ValidateIdentifierRef(name); err != nil {
+			t.Errorf("ValidateIdentifierRef(%q) = %v; granting a predefined role is legitimate",
+				name, err)
+		}
+		if err := ValidateIdentifier(name); err == nil {
+			t.Errorf("ValidateIdentifier(%q) was accepted; db-iam must not create one", name)
+		}
+	}
+}
+
+// Everything else the two share must still be caught on the reference path.
+func TestValidateIdentifierRefStillRejectsTheRest(t *testing.T) {
+	for _, tc := range []struct{ name, in string }{
+		{"empty", ""},
+		{"too long", strings.Repeat("a", 64)},
+		{"leading space", " app_ro"},
+		{"trailing space", "app_ro "},
+		{"null byte", "app\x00ro"},
+		{"control character", "app\tro"},
+	} {
+		if err := ValidateIdentifierRef(tc.in); err == nil {
+			t.Errorf("%s: ValidateIdentifierRef(%q) was accepted", tc.name, tc.in)
+		}
+	}
+}

@@ -88,7 +88,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/targets", s.handleTargets)
 	mux.HandleFunc("GET /api/v1/targets/{id}/capabilities", s.handleCapabilities)
 	mux.HandleFunc("GET /api/v1/targets/{id}/snapshot", s.handleSnapshot)
+
+	// Users authenticate; roles carry privilege. Keeping them on separate
+	// routes is what stops a "login" flag deciding which one you get.
+	mux.HandleFunc("GET /api/v1/targets/{id}/users", s.handleListUsers)
 	mux.HandleFunc("POST /api/v1/targets/{id}/users", s.handleCreateUser)
+	mux.HandleFunc("POST /api/v1/targets/{id}/users/{name}/roles", s.handleMembership)
+	mux.HandleFunc("GET /api/v1/targets/{id}/roles", s.handleListRoles)
+	mux.HandleFunc("POST /api/v1/targets/{id}/roles", s.handleCreateRole)
+	mux.HandleFunc("POST /api/v1/targets/{id}/roles/{name}/roles", s.handleMembership)
+
 	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	mux.Handle("/", consoleHandler())
 
@@ -187,15 +196,17 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	scope := provider.Scope{Target: core.TargetRef{
-		ID: target.ID, Name: target.Name, Engine: target.Engine,
-	}}
-	snap, err := prov.Introspect(ctx, conn, scope, "")
+	caps, err := prov.Capabilities(ctx, conn)
+	if err != nil {
+		writeError(w, fmt.Errorf("probing %s: %w", target.ID, err))
+		return
+	}
+	snap, err := prov.Introspect(ctx, conn, scopeFor(target), "")
 	if err != nil {
 		writeError(w, fmt.Errorf("introspecting %s: %w", target.ID, err))
 		return
 	}
-	writeJSON(w, http.StatusOK, snapshotView(snap))
+	writeJSON(w, http.StatusOK, snapshotView(snap, caps.ConnectedRole))
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +251,42 @@ func (s *Server) resolve(ctx context.Context, id string) (config.Target, provide
 		return target, nil, nil, err
 	}
 	return target, prov, conn, nil
+}
+
+// scopeFor builds the introspection scope for a configured target.
+func scopeFor(t config.Target) provider.Scope {
+	return provider.Scope{Target: core.TargetRef{ID: t.ID, Name: t.Name, Engine: t.Engine}}
+}
+
+// resolveRoleManager is the preamble every principal-changing handler shares:
+// find the target, confirm its provider can manage principals at all, open a
+// connection, and probe what that connection may actually do.
+func (s *Server) resolveRoleManager(w http.ResponseWriter, r *http.Request) (
+	config.Target, provider.RoleManager, provider.Provider, TargetConn, core.Capabilities, bool,
+) {
+	target, prov, conn, err := s.resolve(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return target, nil, nil, nil, core.Capabilities{}, false
+	}
+
+	roles, ok := prov.(provider.RoleManager)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"error": fmt.Sprintf("the %s provider cannot manage principals", target.Engine),
+		})
+		return target, nil, nil, nil, core.Capabilities{}, false
+	}
+
+	ctx, cancel := contextWithTimeout(r, s.cfg.ProbeTimeout)
+	defer cancel()
+
+	caps, err := prov.Capabilities(ctx, conn)
+	if err != nil {
+		writeError(w, fmt.Errorf("probing %s: %w", target.ID, err))
+		return target, nil, nil, nil, core.Capabilities{}, false
+	}
+	return target, roles, prov, conn, caps, true
 }
 
 func (s *Server) connFor(ctx context.Context, t config.Target) (TargetConn, error) {

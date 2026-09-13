@@ -46,7 +46,21 @@ type RoleSpec struct {
 	Comment string
 }
 
-// RoleManager is implemented by providers that can create principals.
+// MembershipChange moves a principal in or out of roles.
+//
+// Grant and Revoke travel together so both halves of a reassignment land in
+// one reviewed plan. Splitting them into two requests would leave a window
+// where a principal holds the union of its old and new access, which is the
+// opposite of what a reassignment is for.
+type MembershipChange struct {
+	// Member is the principal whose membership changes.
+	Member string
+
+	Grant  []string
+	Revoke []string
+}
+
+// RoleManager is implemented by providers that can manage principals.
 //
 // It is separate from Provider because the core contract is about compiling
 // permissions, and not every engine manages identity the same way — some
@@ -56,6 +70,10 @@ type RoleManager interface {
 	// PlanCreateRole produces the statements that would create the role. It
 	// performs no I/O: the result is reviewed, then handed to Apply.
 	PlanCreateRole(spec RoleSpec, caps core.Capabilities) (*Plan, error)
+
+	// PlanMembership produces the statements that would change what roles a
+	// principal belongs to.
+	PlanMembership(change MembershipChange, caps core.Capabilities) (*Plan, error)
 }
 
 // Tx is a transaction over a target.

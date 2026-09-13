@@ -67,6 +67,13 @@ type Capabilities struct {
 	// in scope. Managed providers routinely say no.
 	Superuser bool
 
+	// ConnectedRole is the principal db-iam authenticates as.
+	//
+	// It is carried here so every planner can refuse to modify it. A change
+	// that revoked db-iam's own access would be unrecoverable through db-iam:
+	// the next connection fails and there is no way in to undo it.
+	ConnectedRole string
+
 	// Notes carries provider-specific caveats surfaced to the operator, such
 	// as "rds_superuser cannot alter roles it does not own".
 	Notes []string

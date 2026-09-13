@@ -21,7 +21,8 @@ type Action string
 
 // The recorded actions.
 const (
-	ActionCreateRole Action = "role.create"
+	ActionCreateRole Action = "principal.create"
+	ActionMembership Action = "membership.change"
 	ActionPlan       Action = "plan.create"
 )
 

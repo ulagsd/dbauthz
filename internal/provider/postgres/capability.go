@@ -75,6 +75,7 @@ func classify(p probe) (core.Capabilities, error) {
 		TransactionalDDL: true,  // the property that makes apply recoverable
 	}
 
+	caps.ConnectedRole = p.currentRole
 	caps.Flavor, caps.Notes = detectFlavor(p)
 	caps.Superuser = p.isSuperuser || hasAny(p.memberOf,
 		"rds_superuser", "cloudsqlsuperuser", "azure_pg_admin", "neon_superuser")

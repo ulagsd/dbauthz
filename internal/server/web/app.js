@@ -186,6 +186,57 @@ function renderPlan(plan, heading) {
     <pre>${lines}</pre>`;
 }
 
+// --- forms -----------------------------------------------------------------
+
+// fillSelect rebuilds a <select> from a list of names, preserving whatever was
+// selected before so a background refresh does not wipe a half-finished form.
+function fillSelect(sel, names, selected) {
+  const keep = selected ?? new Set([...sel.selectedOptions].map((o) => o.value));
+  sel.innerHTML = names.map((n) =>
+    `<option value="${esc(n)}"${keep.has(n) ? " selected" : ""}>${esc(n)}</option>`).join("");
+}
+
+const selectedOf = (sel) => [...sel.selectedOptions].map((o) => o.value);
+
+// runForm wraps the shared shape of all three flows: disable the buttons, post,
+// render the plan, surface a generated password once, refresh what changed.
+async function runForm(opts) {
+  const { buttons, out, request, after } = opts;
+  buttons.forEach((b) => { b.disabled = true; });
+  out.innerHTML = `<p class="muted">working\u2026</p>`;
+
+  try {
+    const res = await request();
+    let html = renderPlan(res.plan, res.applied ? "Applied" : "Planned, nothing applied");
+
+    if (res.generated_password) {
+      // Shown once. db-iam keeps no copy and PostgreSQL stores only a
+      // verifier, so there is nothing to read it back from.
+      html += `<div class="reveal mt-md">
+        <b>Generated password \u2014 shown once</b>
+        <pre class="mt-sm">${esc(res.generated_password)}</pre>
+        <span class="muted">Nothing stores this. Close the page and it is gone.</span>
+      </div>`;
+    }
+    if (res.applied) {
+      html += `<p class="${res.verified ? "ok" : "substitute"} mb-0">
+        ${res.verified ? "\u2713 applied and verified against the database"
+          : "applied, but could not be verified"}</p>`;
+    }
+    for (const w of res.warnings || []) html += `<p class="note">${esc(w)}</p>`;
+    out.innerHTML = html;
+
+    if (res.applied && after) after();
+  } catch (e) {
+    let html = `<p class="err">${esc(e.message)}</p>`;
+    if (e.body && e.body.warning) html += `<p class="note">${esc(e.body.warning)}</p>`;
+    if (e.body && e.body.plan) html += renderPlan(e.body.plan, "Plan that failed");
+    out.innerHTML = html;
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
 // --- main ------------------------------------------------------------------
 
 async function main() {
@@ -195,7 +246,7 @@ async function main() {
     if (!targets.length) throw new Error("no targets configured");
     target = targets[0];
     $("targetline").innerHTML =
-      `<span class="mono">${esc(target.id)}</span> · ${esc(target.engine)} · ` +
+      `<span class="mono">${esc(target.id)}</span> \u00b7 ${esc(target.engine)} \u00b7 ` +
       `<span class="mono muted">${esc(target.connection)}</span>`;
   } catch (e) {
     $("targetline").innerHTML = `<span class="err">${esc(e.message)}</span>`;
@@ -207,84 +258,126 @@ async function main() {
 
   get(`${base}/capabilities`).then(renderCaps).catch((e) => fail("caps", e));
 
+  // Principals drive three selects, so they are fetched once and shared.
+  // membership maps a user to the roles it currently holds, which is what lets
+  // the assign form send only a difference.
+  let membership = new Map();
+
+  const refreshPrincipals = async () => {
+    const [users, roles] = await Promise.all([
+      get(`${base}/users`), get(`${base}/roles`),
+    ]);
+
+    // The role db-iam connects as is excluded from every picker: a change that
+    // locked it out could not be undone from here, and the server refuses it
+    // anyway. Better not to offer it than to explain the refusal afterwards.
+    const roleNames = roles.principals.filter((p) => !p.self).map((p) => p.name);
+    const userNames = users.principals.filter((p) => !p.self).map((p) => p.name);
+
+    membership = new Map(users.principals.map((p) => [p.name, new Set(p.member_of)]));
+
+    fillSelect($("r-parents"), roleNames);
+    fillSelect($("u-roles"), roleNames);
+
+    const userSel = $("a-user");
+    const chosen = userSel.value;
+    userSel.innerHTML = userNames.map((n) =>
+      `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("");
+    syncAssignRoles(roleNames);
+  };
+
+  let allRoleNames = [];
+  function syncAssignRoles(roleNames) {
+    if (roleNames) allRoleNames = roleNames;
+    const held = membership.get($("a-user").value) || new Set();
+    fillSelect($("a-roles"), allRoleNames, held);
+  }
+
   const refreshSnapshot = () =>
     get(`${base}/snapshot`)
-      .then((s) => {
-        renderSummary(s); renderRoles(s); renderGrants(s); renderObjects(s);
-        // Keep the "member of" choices in step with what actually exists.
-        const sel = $("f-memberof");
-        const chosen = new Set([...sel.selectedOptions].map((o) => o.value));
-        sel.innerHTML = s.principals.map((p) =>
-          `<option value="${esc(p.name)}"${chosen.has(p.name) ? " selected" : ""}>` +
-          `${esc(p.name)}</option>`).join("");
-      })
+      .then((s) => { renderSummary(s); renderRoles(s); renderGrants(s); renderObjects(s); })
       .catch((e) => { for (const id of ["summary", "roles", "grants", "objects"]) fail(id, e); });
 
   const refreshAudit = () => get("/api/v1/audit").then(renderAudit).catch((e) => fail("audit", e));
 
-  refreshSnapshot();
-  refreshAudit();
+  const refreshAll = () => { refreshPrincipals(); refreshSnapshot(); refreshAudit(); };
+  refreshAll();
 
-  // --- create role ---------------------------------------------------------
+  $("a-user").addEventListener("change", () => syncAssignRoles());
 
-  const form = $("roleform");
-  const out = $("roleresult");
+  // --- 1. create role ------------------------------------------------------
 
-  const payload = (dryRun) => ({
-    name: $("f-name").value.trim(),
-    login: $("f-login").checked,
-    inherit: $("f-inherit").checked,
-    password: $("f-password").value, // empty asks the server to generate one
-    connection_limit: parseInt($("f-limit").value, 10),
-    member_of: [...$("f-memberof").selectedOptions].map((o) => o.value),
+  const roleForm = $("roleform");
+  const roleRequest = (dryRun) => post(`${base}/roles`, {
+    name: $("r-name").value.trim(),
+    roles: selectedOf($("r-parents")),
     dry_run: dryRun,
   });
+  const submitRole = (dryRun) => runForm({
+    buttons: [$("r-plan"), $("r-create")],
+    out: $("roleresult"),
+    request: () => roleRequest(dryRun),
+    after: () => { $("r-name").value = ""; refreshAll(); },
+  });
 
-  async function submit(dryRun) {
-    const buttons = [$("f-plan"), $("f-create")];
-    buttons.forEach((b) => { b.disabled = true; });
-    out.innerHTML = `<p class="muted">working…</p>`;
+  $("r-plan").addEventListener("click", () => submitRole(true));
+  roleForm.addEventListener("submit", (ev) => { ev.preventDefault(); submitRole(false); });
 
-    try {
-      const res = await post(`${base}/users`, payload(dryRun));
-      let html = renderPlan(res.plan, dryRun ? "Planned, nothing applied" : "Applied");
+  // --- 2. create user ------------------------------------------------------
 
-      if (res.generated_password) {
-        // Shown once. db-iam keeps no copy and PostgreSQL stores only a
-        // verifier, so there is nothing to read it back from.
-        html += `<div class="reveal mt-md">
-          <b>Generated password — shown once</b>
-          <pre class="mt-sm">${esc(res.generated_password)}</pre>
-          <span class="muted">Nothing stores this. Close the page and it is gone.</span>
-        </div>`;
-      }
-      if (res.applied) {
-        html += `<p class="${res.verified ? "ok" : "substitute"} mb-0">
-          ${res.verified ? "✓ created and verified against the database"
-            : "created, but could not be verified"}</p>`;
-      }
-      for (const w of res.warnings || []) html += `<p class="note">${esc(w)}</p>`;
-      out.innerHTML = html;
+  const userForm = $("userform");
+  const userRequest = (dryRun) => post(`${base}/users`, {
+    name: $("u-name").value.trim(),
+    password: $("u-password").value, // empty asks the server to generate one
+    roles: selectedOf($("u-roles")),
+    inherit: $("u-inherit").checked,
+    connection_limit: parseInt($("u-limit").value, 10),
+    dry_run: dryRun,
+  });
+  const submitUser = (dryRun) => runForm({
+    buttons: [$("u-plan"), $("u-create")],
+    out: $("userresult"),
+    request: () => userRequest(dryRun),
+    after: () => { $("u-name").value = ""; $("u-password").value = ""; refreshAll(); },
+  });
 
-      if (res.applied) { $("f-password").value = ""; refreshSnapshot(); }
-      refreshAudit();
-    } catch (e) {
-      let html = `<p class="err">${esc(e.message)}</p>`;
-      if (e.body && e.body.plan) html += renderPlan(e.body.plan, "Plan that failed");
-      out.innerHTML = html;
-      refreshAudit();
-    } finally {
-      buttons.forEach((b) => { b.disabled = false; });
-    }
+  $("u-plan").addEventListener("click", () => submitUser(true));
+  userForm.addEventListener("submit", (ev) => { ev.preventDefault(); submitUser(false); });
+
+  // --- 3. assign roles -----------------------------------------------------
+
+  const assignForm = $("assignform");
+
+  function membershipDiff() {
+    const user = $("a-user").value;
+    const held = membership.get(user) || new Set();
+    const want = new Set(selectedOf($("a-roles")));
+    return {
+      user,
+      grant: [...want].filter((r) => !held.has(r)),
+      revoke: [...held].filter((r) => want.has(r) === false && allRoleNames.includes(r)),
+    };
   }
 
-  $("f-plan").addEventListener("click", () => submit(true));
-  form.addEventListener("submit", (ev) => {
-    // Without this the form navigates, the page reloads, and the browser
-    // offers to save the password it just saw in a query string.
-    ev.preventDefault();
-    submit(false);
-  });
+  const submitAssign = (dryRun) => {
+    const { user, grant, revoke } = membershipDiff();
+    if (!user) return;
+    if (!grant.length && !revoke.length) {
+      $("assignresult").innerHTML =
+        `<p class="muted mb-0">Nothing to change: that is already the membership.</p>`;
+      return;
+    }
+    return runForm({
+      buttons: [$("a-plan"), $("a-save")],
+      out: $("assignresult"),
+      request: () => post(`${base}/users/${encodeURIComponent(user)}/roles`,
+        { grant, revoke, dry_run: dryRun }),
+      after: refreshAll,
+    });
+  };
+
+  $("a-plan").addEventListener("click", () => submitAssign(true));
+  assignForm.addEventListener("submit", (ev) => { ev.preventDefault(); submitAssign(false); });
 }
 
 main();

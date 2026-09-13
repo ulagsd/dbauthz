@@ -35,19 +35,25 @@ func QuoteLiteral(s string) string {
 	return "'" + escaped + "'"
 }
 
-// ValidateIdentifier rejects names that must not reach a statement even quoted.
+// ValidateIdentifierRef checks a name that refers to something that already
+// exists, such as a role being granted.
 //
-// Quoting makes an arbitrary name *safe*; it does not make it *sensible*. These
-// rules catch the cases where a technically-valid name would produce a role
-// nobody can administer or one that collides with the server's own.
-func ValidateIdentifier(name string) error {
+// Quoting makes an arbitrary name *safe*; these rules catch the cases where a
+// technically-valid name would still be a mistake — one that PostgreSQL would
+// truncate into a different object, or one carrying characters invisible in
+// every tool that will display it.
+//
+// It deliberately permits the pg_ prefix: GRANT pg_read_all_data TO alice is a
+// real thing operators do, and refusing to reference a role the server ships
+// would make db-iam unable to express access people already grant by hand.
+func ValidateIdentifierRef(name string) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("name must not be empty")
 
 	case len(name) > maxIdentifierBytes:
 		return fmt.Errorf("name is %d bytes; PostgreSQL truncates at %d, "+
-			"which would silently create a different role", len(name), maxIdentifierBytes)
+			"which would silently address a different role", len(name), maxIdentifierBytes)
 
 	case !utf8.ValidString(name):
 		return fmt.Errorf("name is not valid UTF-8")
@@ -58,17 +64,27 @@ func ValidateIdentifier(name string) error {
 	case strings.TrimSpace(name) != name:
 		return fmt.Errorf("name has leading or trailing whitespace, which is "+
 			"invisible in every tool that will display it: %q", name)
-
-	// pg_ is reserved for the server's predefined roles. Creating one is
-	// refused by PostgreSQL anyway, but failing here names the reason.
-	case strings.HasPrefix(strings.ToLower(name), "pg_"):
-		return fmt.Errorf("names beginning with pg_ are reserved for PostgreSQL")
 	}
 
 	for _, r := range name {
 		if r < 0x20 || r == 0x7f {
 			return fmt.Errorf("name must not contain control characters")
 		}
+	}
+	return nil
+}
+
+// ValidateIdentifier checks a name db-iam is about to create.
+//
+// Stricter than ValidateIdentifierRef by exactly one rule: pg_ is reserved for
+// the server's own predefined roles. PostgreSQL refuses to create one anyway,
+// but failing here names the reason instead of surfacing a server error.
+func ValidateIdentifier(name string) error {
+	if err := ValidateIdentifierRef(name); err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.ToLower(name), "pg_") {
+		return fmt.Errorf("names beginning with pg_ are reserved for PostgreSQL")
 	}
 	return nil
 }

@@ -101,7 +101,11 @@ SELECT
       FROM pg_auth_members m
       JOIN pg_roles g ON g.oid = m.roleid
      WHERE m.member = r.oid
-  ), '{}') AS member_of
+  ), '{}') AS member_of,
+  -- The comment is how db-iam tells what it created from what was already
+  -- there. It travels with the role and survives dump and restore, which a
+  -- side table on the target would not.
+  COALESCE(shobj_description(r.oid, 'pg_authid'), '') AS comment
 FROM pg_roles r
 WHERE r.rolname NOT LIKE 'pg\_%'
 ORDER BY r.rolname
@@ -116,10 +120,14 @@ func readPrincipals(ctx context.Context, q provider.Querier) ([]provider.Observe
 
 	var out []provider.ObservedPrincipal
 	for rows.Next() {
-		var p provider.ObservedPrincipal
-		if err := rows.Scan(&p.Name, &p.Login, &p.Inherit, &p.MemberOf); err != nil {
+		var (
+			p       provider.ObservedPrincipal
+			comment string
+		)
+		if err := rows.Scan(&p.Name, &p.Login, &p.Inherit, &p.MemberOf, &comment); err != nil {
 			return nil, err
 		}
+		p.Managed = comment == ManagedComment
 		out = append(out, p)
 	}
 	return out, rows.Err()

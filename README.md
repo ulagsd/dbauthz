@@ -65,19 +65,39 @@ because every one of those is something the solver will have to reason about.
 
 ### API
 
+db-iam separates the two things PostgreSQL keeps in one table. A **user**
+authenticates; a **role** carries privilege and is granted to users. In
+`pg_authid` both are rows differing only by `rolcanlogin`, which is how people
+end up with login roles they meant as groups. Here the endpoint decides:
+`POST /roles` cannot produce something that logs in, and `POST /users` cannot
+produce something that does not.
+
 | | |
 |---|---|
 | `GET /api/v1/targets` | configured targets, connection strings redacted |
 | `GET /api/v1/targets/{id}/capabilities` | the probed capability profile |
 | `GET /api/v1/targets/{id}/snapshot` | roles, objects and grants as they are |
-| `POST /api/v1/targets/{id}/users` | create a role — `"dry_run": true` returns the plan only |
+| `GET /api/v1/targets/{id}/roles` | group roles |
+| `POST /api/v1/targets/{id}/roles` | create a group role |
+| `GET /api/v1/targets/{id}/users` | login principals |
+| `POST /api/v1/targets/{id}/users` | create a user, optionally granting roles in the same plan |
+| `POST /api/v1/targets/{id}/users/{name}/roles` | `{"grant": [...], "revoke": [...]}` |
 | `GET /api/v1/audit` | the record chain |
 | `GET /api/v1/actions` | the canonical action vocabulary |
+
+Every write takes `"dry_run": true` to return the plan without applying it, and
+every response carries the plan either way.
 
 A password given to `POST .../users` is turned into a SCRAM-SHA-256 verifier
 before anything is sent, so the plaintext never reaches the server, its log, or
 `pg_stat_activity`. Omit it and one is generated and returned exactly once —
 db-iam keeps no copy and PostgreSQL stores only a verifier.
+
+Grant and revoke travel in one request because they belong in one plan, with
+revokes ordered first: a reassignment must never leave a principal holding both
+its old and its new access. The role db-iam connects as is refused by every
+write and hidden from every picker, because a change that locked it out could
+not be undone from here.
 
 Not yet: the solver, `Compile`, `Diff`, policy documents, authentication,
 tenancy, durable audit.

@@ -30,42 +30,87 @@
   </section>
 
   <section>
-    <h2>Create role</h2>
+    <h2>1 &middot; Create role <span class="muted plain">— carries privilege, cannot log in</span></h2>
     <div class="body">
       <form id="roleform" autocomplete="off">
         <div class="row">
           <div class="field">
-            <label for="f-name">Name</label>
-            <input type="text" id="f-name" required placeholder="alice" autocomplete="off">
+            <label for="r-name">Role name</label>
+            <input type="text" id="r-name" required placeholder="reporting_ro" autocomplete="off">
           </div>
           <div class="field">
-            <label for="f-password">Password <span class="muted">— blank to generate</span></label>
-            <input type="password" id="f-password" placeholder="generated" autocomplete="new-password">
-          </div>
-          <div class="field">
-            <label for="f-limit">Connection limit</label>
-            <input type="number" id="f-limit" value="-1" min="-1" step="1">
+            <label for="r-parents">Member of <span class="muted">— optional</span></label>
+            <select id="r-parents" multiple></select>
           </div>
         </div>
         <div class="row">
-          <label class="check"><input type="checkbox" id="f-login" checked> can log in</label>
-          <label class="check"><input type="checkbox" id="f-inherit" checked> inherits membership privileges</label>
-        </div>
-        <div class="row">
-          <div class="field">
-            <label for="f-memberof">Member of <span class="muted">— optional, multi-select</span></label>
-            <select id="f-memberof" multiple></select>
-          </div>
-        </div>
-        <div class="row">
-          <button type="button" id="f-plan" class="secondary">Preview plan</button>
-          <button type="submit" id="f-create">Create role</button>
+          <button type="button" id="r-plan" class="secondary">Preview plan</button>
+          <button type="submit" id="r-create">Create role</button>
         </div>
       </form>
       <div id="roleresult" class="mt-lg"></div>
-      <p class="note">The password is turned into a SCRAM-SHA-256 verifier here, and only the
-        verifier is sent. The plaintext never reaches the server, its log, or
+    </div>
+  </section>
+
+  <section>
+    <h2>2 &middot; Create user <span class="muted plain">— authenticates, holds no privilege of its own</span></h2>
+    <div class="body">
+      <form id="userform" autocomplete="off">
+        <div class="row">
+          <div class="field">
+            <label for="u-name">User name</label>
+            <input type="text" id="u-name" required placeholder="alice" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="u-password">Password <span class="muted">— blank to generate</span></label>
+            <input type="password" id="u-password" placeholder="generated" autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label for="u-limit">Connection limit</label>
+            <input type="number" id="u-limit" value="-1" min="-1" step="1">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="u-roles">Roles <span class="muted">— optional, granted in the same plan</span></label>
+            <select id="u-roles" multiple></select>
+          </div>
+          <label class="check"><input type="checkbox" id="u-inherit" checked> inherits role privileges without SET ROLE</label>
+        </div>
+        <div class="row">
+          <button type="button" id="u-plan" class="secondary">Preview plan</button>
+          <button type="submit" id="u-create">Create user</button>
+        </div>
+      </form>
+      <div id="userresult" class="mt-lg"></div>
+      <p class="note">The password becomes a SCRAM-SHA-256 verifier here, and only the verifier is
+        sent. The plaintext never reaches the server, its log, or
         <span class="mono">pg_stat_activity</span>.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 &middot; Assign roles</h2>
+    <div class="body">
+      <form id="assignform" autocomplete="off">
+        <div class="row">
+          <div class="field">
+            <label for="a-user">User</label>
+            <select id="a-user"></select>
+          </div>
+          <div class="field">
+            <label for="a-roles">Roles <span class="muted">— current membership preselected</span></label>
+            <select id="a-roles" multiple></select>
+          </div>
+        </div>
+        <div class="row">
+          <button type="button" id="a-plan" class="secondary">Preview plan</button>
+          <button type="submit" id="a-save">Save membership</button>
+        </div>
+      </form>
+      <div id="assignresult" class="mt-lg"></div>
+      <p class="note">Only the difference is sent. Revokes are ordered before grants, so a
+        reassignment never leaves the user holding both its old and its new access at once.</p>
     </div>
   </section>
 

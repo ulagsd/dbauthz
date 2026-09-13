@@ -28,8 +28,13 @@ func (pr *Provider) PlanCreateRole(spec provider.RoleSpec, caps core.Capabilitie
 	if err := ValidateIdentifier(spec.Name); err != nil {
 		return nil, fmt.Errorf("role name: %w", err)
 	}
+	if err := guardConnectedRole(spec.Name, caps); err != nil {
+		return nil, err
+	}
 	for _, parent := range spec.MemberOf {
-		if err := ValidateIdentifier(parent); err != nil {
+		// A reference, not a creation: granting a predefined pg_ role here is
+		// legitimate and must not be refused.
+		if err := ValidateIdentifierRef(parent); err != nil {
 			return nil, fmt.Errorf("member of %q: %w", parent, err)
 		}
 	}
