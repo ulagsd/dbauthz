@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - copyloopvar
+    - misspell
+    - revive
+    - unconvert
+    # A privilege tool must not paper over a failed write, and must not build
+    # SQL by concatenation where a parameter will do.
+    - sqlclosecheck
+    - rowserrcheck
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers]
+
+exclusions:
+  rules:
+    - path: _test\.go
+      linters: [errcheck]
