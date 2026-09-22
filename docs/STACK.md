@@ -419,12 +419,12 @@ boundary rather than a preference.
 |---|---|---|
 | CI | GitHub Actions, matrix across Go versions and engine versions | FROZEN |
 | Lint | `golangci-lint` v2 | FROZEN |
-| Schema / API lint | `buf lint`, `buf breaking` | PROPOSED, with §4 |
+| Schema / API lint | `buf lint`, `buf breaking` | FROZEN, follows §4 |
 | Integration tests | `testcontainers-go`, one container per engine per major version | FROZEN |
 | Compiler correctness | Golden-file corpus, shared fixtures, per-provider expected output | FROZEN |
 | Dependency updates | Renovate | FROZEN |
 | Release | `goreleaser`, conventional commits, semantic versioning | FROZEN |
-| Contribution | DCO sign-off (lighter than a CLA, sufficient for Apache-2.0) | PROPOSED |
+| Contribution | DCO sign-off (lighter than a CLA, sufficient for Apache-2.0) | FROZEN, follows §12 |
 
 ---
 
