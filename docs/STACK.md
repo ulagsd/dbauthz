@@ -1,19 +1,23 @@
 # db-iam — Technology Stack Freeze
 
-> **v0.2 · 2026-09-22 · SIX DECISIONS FROZEN, ONE OPEN**
+> **v0.3 · 2026-09-22 · FROZEN**
 >
 > Scope: languages, libraries, tools, services, packaging and licence.
 > Out of scope: architecture diagrams, HLD, API shapes, data models. Those come
 > after this document is agreed.
 >
-> Every decision carries a status — **FROZEN**, **PROPOSED** or **OPEN** — and
-> what it would cost to reverse.
+> Every decision below is **FROZEN** unless it is marked otherwise, and carries
+> what it would cost to reverse. The only things still marked PROPOSED are for
+> work that is deliberately deferred past v1 — the console stack, and
+> out-of-process provider plugins.
 >
-> **Frozen in v0.2:** engine scope (Class A and B only), Go, `CGO_ENABLED=0`,
-> in-tree provider SPI, Connect RPC, PostgreSQL control store, OIDC,
-> Apache-2.0, API + CLI before console, MySQL as the second engine.
+> **The stack is frozen.** Engine scope (Class A and B only), Go with
+> `CGO_ENABLED=0`, in-tree provider SPI, db-iam's own policy format and solver,
+> Connect RPC, PostgreSQL control store, OIDC, Apache-2.0, API + CLI before any
+> console, PostgreSQL then MySQL.
 >
-> **Still open:** the policy engine (§3). See the recommendation there.
+> Changes from here are amendments with a reason, not open questions. The next
+> document is the architecture and HLD.
 
 ---
 
@@ -173,7 +177,7 @@ it before the second provider exists.**
 
 ## 3. Policy engine and policy format
 
-### OPEN — the one decision still to make
+### FROZEN — see §3.3
 
 This section replaces the v0.1 recommendation, which oversold Cedar. The
 correction: **Cedar Analysis and the schema validator are Rust-only.**
@@ -221,33 +225,52 @@ the output, not a decision.
 adopt.** This is the single most important thing to understand about this
 section.
 
-### 3.2 The options
+### 3.2 The options that were considered
 
-| Option | What it means | Cost |
+| Option | What it means | Verdict |
 |---|---|---|
-| **A — own format, own solver** *(recommended)* | Define db-iam's IAM-shaped JSON with our own schema and validator. Borrow Cedar's *model*: principal/action/resource/context, `permit`/`forbid`, deny-wins, typed entities. | We own a language. No formal verification. |
-| **B — Cedar at runtime** | `cedar-go` embedded, Cedar as the authoring surface | Gains a designed language and spec. Loses validation and analysis until cedar-go catches up. Still needs our own solver for Job 2. |
-| **C — Cedar language, Rust CLI in CI** | Author in Cedar; run the Rust `cedar` CLI in CI for validation and Analysis; `cedar-go` at runtime | Gets formal verification back. Adds a non-Go build-time tool — acceptable, since it is CI-only and never in the shipped binary. |
-| **D — OPA / Rego** | Go-native, and its [partial evaluation to SQL](https://www.openpolicyagent.org/docs/filtering) is mature and shipped — genuinely the closest thing to Job 2 available today | Rego is a real adoption tax on whoever writes the policies |
+| **A — own format, own solver** | Define db-iam's IAM-shaped JSON with our own schema and validator. Borrow Cedar's *model*: principal/action/resource/context, `permit`/`forbid`, deny-wins, typed entities. | **CHOSEN** |
+| B — Cedar at runtime | `cedar-go` embedded, Cedar as the authoring surface | Rejected: loses validation and analysis until cedar-go catches up, and still needs our own solver for Job 2 |
+| C — Cedar language, Rust CLI in CI | Author in Cedar, validate with the Rust CLI, evaluate with `cedar-go` | Rejected for v1: adds a second toolchain to buy a feature we cannot yet use |
+| D — OPA / Rego | Go-native, and its [partial evaluation to SQL](https://www.openpolicyagent.org/docs/filtering) is mature and shipped | Rejected: Rego is a real adoption tax on whoever writes the policies, and its output shape is row filters, not grant sets |
 
-### 3.3 Recommendation — option A, with the door left open
+### 3.3 FROZEN — db-iam's own policy format and solver
 
-1. **Steal Cedar's model.** `permit`/`forbid`, deny always wins, typed
-   entities, an explicit schema. These are good ideas and cost nothing.
-2. **Define db-iam's own IAM-shaped JSON** as the authoring surface. It matches
-   what people already know from AWS, and we control its evolution.
-3. **Write the solver.** We were always going to; see §3.1.
-4. **Design the format so it can lower to Cedar later.** If `cedar-go` gains
-   TPE and Analysis, adopting it becomes an upgrade rather than a rewrite, and
-   we get formal verification then.
+**What we build:**
 
-**Reversal cost: medium.** The authoring surface is user-visible, so changing
-it later breaks people's policies. Worth one more iteration before freezing.
+| Component | Choice |
+|---|---|
+| Authoring format | **db-iam Policy Document** — versioned JSON, AWS-IAM-shaped, content-addressed by SHA-256 |
+| Semantic model | Borrowed from Cedar: `permit` / `forbid`, **deny always wins**, principal / action / resource / condition, typed entities with hierarchy |
+| Envelope validation | `santhosh-tekuri/jsonschema` (pure Go) for structural checks |
+| Semantic validation | Ours — action-to-object-kind rules, resource-path shape, unknown-entity detection |
+| Solver | Ours, in-tree. Enumerates the grant set, subtracts denies, narrows column sets, keeps globs symbolic where it can |
+| Control-plane authz (Job 1) | **The same engine.** One evaluator, dogfooded |
 
-**For db-iam's own control-plane authorization (Job 1)**, `cedar-go` is a fine
-low-risk choice and dogfoods the model — but Casbin or a hand-rolled check is
-also defensible for what will be roughly ten roles and thirty permissions.
-Decide this separately and later; it is not load-bearing.
+**What we explicitly do not build:** a general-purpose policy language, a
+standalone policy decision service, or an SDK for third parties to embed. The
+format exists to describe database privileges and nothing else, and that
+narrowness is what keeps the solver tractable.
+
+**No runtime policy-engine dependency in v1.** `cedar-go`, OPA and Casbin are
+all out of the dependency tree. This also closes the parked question about
+control-plane authorization: since we are building an evaluator anyway, adding
+a second one for roughly ten roles and thirty permissions would be a
+dependency bought for nothing.
+
+**The constraint that keeps Cedar available later:** the policy format's
+semantics stay a **subset** of Cedar's. No construct that Cedar cannot express.
+That makes `dbiam policy export --cedar` a lowering rather than a translation,
+so if `cedar-go` gains type-aware partial evaluation and Analysis, adopting it
+is an upgrade and formal verification arrives with it.
+
+**Testing, because the solver is where correctness is won or lost:**
+
+| Concern | Tool |
+|---|---|
+| Emission correctness | Golden-file corpus — shared fixtures, per-provider expected statements |
+| Solver invariants | Property-based tests via `pgregory.net/rapid` (pure Go) |
+| The invariants worth asserting | A deny is never silently dropped · the emitted grant set never exceeds the policy · applying a plan twice equals applying it once |
 
 ## 4. API layer
 
@@ -477,7 +500,8 @@ ever vendor Apache-licensed code.
 | **Licence** | Apache-2.0 | **FROZEN** |
 | **Engine order** | PostgreSQL → MySQL | **FROZEN** |
 | Console stack | React 19 + Vite + TanStack + Tailwind, `go:embed` | PROPOSED, post-v1 |
-| **Policy engine / format** | Own IAM-shaped JSON + own solver, recommended | **OPEN** |
+| **Policy format** | db-iam IAM-shaped JSON, Cedar-subset semantics | **FROZEN** |
+| **Policy solver** | Ours, in-tree. No runtime policy-engine dependency | **FROZEN** |
 
 ### Engine order — FROZEN
 
@@ -495,26 +519,31 @@ Cassandra is the interesting third: it proves the model survives a
 non-relational hierarchy (keyspace/table, no schema level) while still having
 real CQL `GRANT` semantics.
 
-## 14. Remaining open question
+## 14. What happens next
 
-Only one, and it does not block starting:
-
-**The policy engine and authoring format (§3).** My recommendation is option A
-— db-iam's own IAM-shaped JSON, borrowing Cedar's model, with a purpose-built
-solver, designed so it can lower to Cedar later. The reversal cost is medium
-because the authoring surface is user-visible, so it is worth one more
-iteration rather than being frozen here.
-
-Everything else in §13 is settled. The next document is the architecture and
-HLD, which now has a fixed substrate to sit on.
-
-### Two things to settle in passing, not blocking
+The stack is frozen. Two items remain, and neither blocks starting:
 
 - **Project name.** `db-iam` is descriptive and reads well. Check trademark and
   package-registry collisions before the first public release, not after.
-- **db-iam's own control-plane authorization.** `cedar-go` dogfoods the model;
-  Casbin or a hand-rolled check is also fine for roughly ten roles and thirty
-  permissions. Independent of §3 and can be decided during implementation.
+- **Amendments.** Anything here can change, but from now it needs a reason
+  recorded against the decision it replaces, not a fresh debate. Add an ADR
+  directory when the first one comes up.
+
+**The next document is the architecture and HLD**, which now has a fixed
+substrate: Go, a serialisable in-tree provider SPI, our own policy format and
+solver, Connect RPC over PostgreSQL, and a CLI as the only interface in v1.
+
+Three things that document has to settle, flagged here so they are not a
+surprise:
+
+1. **The policy document's concrete shape** — the resource-path grammar, the
+   action vocabulary, and the condition sub-language. This is the user-visible
+   surface and the most expensive thing to change later.
+2. **The solver algorithm** — glob expansion, deny subtraction, membership
+   closure, and the satisfiability check that reports when a deny cannot be
+   honoured under the chosen identity strategy.
+3. **The provider SPI's exact signatures** — serialisable-only, which §2.2
+   requires, and which is what keeps out-of-process plugins possible in v2.
 
 ## Appendix — what the prototype already established
 
