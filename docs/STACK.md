@@ -545,10 +545,11 @@ surprise:
 3. **The provider SPI's exact signatures** — serialisable-only, which §2.2
    requires, and which is what keeps out-of-process plugins possible in v2.
 
-## Appendix — what the prototype already established
+## Appendix — what an earlier prototype established
 
-The working spike is set aside as you asked. Four of its results are evidence
-for decisions above rather than throwaway, and one is a warning:
+A working spike was built and then removed when the repository was reset to
+this document. It is recoverable from git history. Four of its results are
+evidence for decisions above rather than throwaway, and one is a warning:
 
 - `pgx` + `CGO_ENABLED=0` produced a **22.7 MB** `distroless/static` image that
   cross-compiles to linux/amd64 and linux/arm64 with no toolchain
@@ -580,4 +581,5 @@ whenever one does arrive.
 - [Cedar](https://www.cedarpolicy.com/) · [cedar-go](https://github.com/cedar-policy/cedar-go) · [Cedar Analysis](https://aws.amazon.com/blogs/opensource/introducing-cedar-analysis-open-source-tools-for-verifying-authorization-policies/)
 - [The state of open source licensing in 2026 — RedMonk](https://redmonk.com/sogrady/2026/03/25/open-source-licensing-2026/)
 - [jackc/pgx](https://github.com/jackc/pgx) · [cgo and cross-compilation](https://ecostack.dev/posts/go-and-cgo-cross-compilation/)
-- Landscape research: [docs/RESEARCH.md](./RESEARCH.md)
+- Landscape research and the foundations guide were removed when the repository
+  was reset to this document; both remain recoverable from git history.
