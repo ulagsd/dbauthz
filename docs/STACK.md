@@ -1,4 +1,4 @@
-# db-iam — Technology Stack Freeze
+# dbauthz — Technology Stack Freeze
 
 > **v0.3 · 2026-09-22 · FROZEN**
 >
@@ -12,7 +12,7 @@
 > out-of-process provider plugins.
 >
 > **The stack is frozen.** Engine scope (Class A and B only), Go with
-> `CGO_ENABLED=0`, in-tree provider SPI, db-iam's own policy format and solver,
+> `CGO_ENABLED=0`, in-tree provider SPI, dbauthz's own policy format and solver,
 > Connect RPC, PostgreSQL control store, OIDC, Apache-2.0, API + CLI before any
 > console, PostgreSQL then MySQL.
 >
@@ -30,7 +30,7 @@ whole delivery surface.
 **The engines you listed do not share an identity model. They fall into three
 classes, and only two of them are the same product.**
 
-| Class | Engines | Identity model | What db-iam can do |
+| Class | Engines | Identity model | What dbauthz can do |
 |---|---|---|---|
 | **A — native privilege system** | PostgreSQL, MySQL/MariaDB, SQL Server, Oracle, Cassandra/ScyllaDB, ClickHouse, Snowflake, Redshift, MongoDB, Trino | Roles + GRANT, or equivalent | Compile policy into native statements. **This is the product.** |
 | **B — access control, but not via SQL** | Apache Pinot, Elasticsearch/OpenSearch, Kafka, Druid | Admin API / config-driven ACLs | Same pipeline, different emitter: compile to their API instead of SQL |
@@ -63,7 +63,7 @@ three coherent answers, and they are different products:
 > attempt produces a clear refusal rather than a half-working driver.
 >
 > This also removes the multi-language SDK surface from the stack entirely:
-> db-iam ships Go, and only Go.
+> dbauthz ships Go, and only Go.
 
 Revisit only if you later decide to build option (2) above, which is a
 separate product, not a driver.
@@ -143,7 +143,7 @@ sandbox for this workload. wazero is excellent — this is not its use case.
 we do not need, since every in-scope driver is already Go. The price is process
 supervision, version skew between host and plugin, and a much harder debugging
 story. HashiCorp uses it because Terraform providers are written by strangers;
-db-iam's providers will be written by contributors to db-iam.
+dbauthz's providers will be written by contributors to dbauthz.
 
 **Why go-plugin stays on the roadmap**: it is the answer when someone needs an
 engine whose only usable SDK is Java or Python, or a cgo driver they do not
@@ -206,7 +206,7 @@ forbid (
 unless { principal in Group::"compliance" };
 ```
 
-**db-iam has two jobs, and they are not the same shape.**
+**dbauthz has two jobs, and they are not the same shape.**
 
 | | Job 1 — control-plane authz | Job 2 — privilege compilation |
 |---|---|---|
@@ -229,18 +229,18 @@ section.
 
 | Option | What it means | Verdict |
 |---|---|---|
-| **A — own format, own solver** | Define db-iam's IAM-shaped JSON with our own schema and validator. Borrow Cedar's *model*: principal/action/resource/context, `permit`/`forbid`, deny-wins, typed entities. | **CHOSEN** |
+| **A — own format, own solver** | Define dbauthz's IAM-shaped JSON with our own schema and validator. Borrow Cedar's *model*: principal/action/resource/context, `permit`/`forbid`, deny-wins, typed entities. | **CHOSEN** |
 | B — Cedar at runtime | `cedar-go` embedded, Cedar as the authoring surface | Rejected: loses validation and analysis until cedar-go catches up, and still needs our own solver for Job 2 |
 | C — Cedar language, Rust CLI in CI | Author in Cedar, validate with the Rust CLI, evaluate with `cedar-go` | Rejected for v1: adds a second toolchain to buy a feature we cannot yet use |
 | D — OPA / Rego | Go-native, and its [partial evaluation to SQL](https://www.openpolicyagent.org/docs/filtering) is mature and shipped | Rejected: Rego is a real adoption tax on whoever writes the policies, and its output shape is row filters, not grant sets |
 
-### 3.3 FROZEN — db-iam's own policy format and solver
+### 3.3 FROZEN — dbauthz's own policy format and solver
 
 **What we build:**
 
 | Component | Choice |
 |---|---|
-| Authoring format | **db-iam Policy Document** — versioned JSON, AWS-IAM-shaped, content-addressed by SHA-256 |
+| Authoring format | **dbauthz Policy Document** — versioned JSON, AWS-IAM-shaped, content-addressed by SHA-256 |
 | Semantic model | Borrowed from Cedar: `permit` / `forbid`, **deny always wins**, principal / action / resource / condition, typed entities with hierarchy |
 | Envelope validation | `santhosh-tekuri/jsonschema` (pure Go) for structural checks |
 | Semantic validation | Ours — action-to-object-kind rules, resource-path shape, unknown-entity detection |
@@ -260,7 +260,7 @@ dependency bought for nothing.
 
 **The constraint that keeps Cedar available later:** the policy format's
 semantics stay a **subset** of Cedar's. No construct that Cedar cannot express.
-That makes `dbiam policy export --cedar` a lowering rather than a translation,
+That makes `dbauthz policy export --cedar` a lowering rather than a translation,
 so if `cedar-go` gains type-aware partial evaluation and Analysis, adopting it
 is an upgrade and formal verification arrives with it.
 
@@ -351,15 +351,15 @@ export all have to be genuinely good. Budget for that.
 |---|---|---|
 | Human authentication | **OIDC** — Keycloak, Zitadel, Okta, Entra, Google, Authentik | FROZEN |
 | Machine authentication | OIDC client credentials, short-lived tokens; SPIFFE/SPIRE optional later | FROZEN |
-| db-iam's own authorization | **Cedar** — dogfood the engine | FROZEN |
+| dbauthz's own authorization | **Cedar** — dogfood the engine | FROZEN |
 | User provisioning | SCIM | Deferred |
 | Secret storage | Pluggable `SecretProvider`: env, file, K8s Secret, Vault, AWS SM, GCP SM, Azure KV | FROZEN |
 | Local encryption | Envelope encryption via KMS / Vault Transit / `age` | FROZEN |
 
-**Never build an identity provider.** db-iam consumes identity; it does not
+**Never build an identity provider.** dbauthz consumes identity; it does not
 issue it.
 
-**db-iam stores no target credential values.** Targets carry a reference
+**dbauthz stores no target credential values.** Targets carry a reference
 resolved at use time. This is what lets the control plane hold zero secrets in
 its own database, and it is not retrofittable.
 
@@ -390,7 +390,7 @@ need nothing special because they are already covered.
 | Target | Tooling | Status |
 |---|---|---|
 | **Single binary** | `goreleaser` → Homebrew, apt/rpm/apk, Scoop, `go install` | FROZEN |
-| **VM / EC2 / bare metal** | Binary + systemd unit + `/etc/dbiam/config.yaml` | FROZEN |
+| **VM / EC2 / bare metal** | Binary + systemd unit + `/etc/dbauthz/config.yaml` | FROZEN |
 | **Container** | Multi-stage → `distroless/static`, non-root, read-only root, multi-arch via buildx | FROZEN |
 | **Docker Compose** | Committed quickstart, one command | FROZEN |
 | **Kubernetes — Helm** | OCI chart published to GHCR | FROZEN |
@@ -500,7 +500,7 @@ ever vendor Apache-licensed code.
 | **Licence** | Apache-2.0 | **FROZEN** |
 | **Engine order** | PostgreSQL → MySQL | **FROZEN** |
 | Console stack | React 19 + Vite + TanStack + Tailwind, `go:embed` | PROPOSED, post-v1 |
-| **Policy format** | db-iam IAM-shaped JSON, Cedar-subset semantics | **FROZEN** |
+| **Policy format** | dbauthz IAM-shaped JSON, Cedar-subset semantics | **FROZEN** |
 | **Policy solver** | Ours, in-tree. No runtime policy-engine dependency | **FROZEN** |
 
 ### Engine order — FROZEN
@@ -521,13 +521,46 @@ real CQL `GRANT` semantics.
 
 ## 14. What happens next
 
-The stack is frozen. Two items remain, and neither blocks starting:
+The stack is frozen. One item remains, and it does not block starting:
 
-- **Project name.** `db-iam` is descriptive and reads well. Check trademark and
-  package-registry collisions before the first public release, not after.
 - **Amendments.** Anything here can change, but from now it needs a reason
   recorded against the decision it replaces, not a fresh debate. Add an ADR
   directory when the first one comes up.
+
+### Name — FROZEN
+
+**`dbauthz`**, from *database authorization*, following the `authz` / `authn`
+convention. Binary `dbauthz`, module `github.com/ulagsd/dbauthz`, config at
+`/etc/dbauthz/config.yaml`, environment prefix `DBAUTHZ_`.
+
+Checked before committing to it:
+
+| | |
+|---|---|
+| GitHub org, npm, PyPI, Homebrew | free |
+| `dbauthz.com` / `.dev` / `.io` | unregistered |
+| crates.io | inconclusive behind Cloudflare — verify manually |
+
+One known overlap, accepted: [`coder/coder/coderd/database/dbauthz`](https://pkg.go.dev/github.com/coder/coder/coderd/database/dbauthz)
+is a Go package inside Coder described as "an authorization layer on top of the
+database". It is an internal package path, not a product or a trademark, so the
+only cost is that a `pkg.go.dev` search for the bare word surfaces it first.
+
+Rejected, with reasons worth keeping so they are not revisited:
+
+- **`db-iam`** — a description rather than a name, and unwinnable in search: the
+  query returns AWS RDS IAM, Cloud SQL IAM and Azure documentation.
+- **`dbz`** — `github.com/debezium/dbz` is Debezium's issue tracker and `dbz` is
+  the conventional topic prefix in its connector configs. Same audience, same
+  domain. Dragon Ball Z makes the search term unwinnable besides.
+- **`edict`** — the most brandable candidate, but already taken on both npm and
+  PyPI.
+- **`palisade`** — at least five existing projects, including a well-known
+  lattice-cryptography library.
+
+`authz` is insider vocabulary: platform and security engineers read it
+instantly, DBAs and data engineers say "permissions" and "grants". That is the
+accepted trade, and it points the documentation's voice at the first audience.
 
 **The next document is the architecture and HLD**, which now has a fixed
 substrate: Go, a serialisable in-tree provider SPI, our own policy format and
