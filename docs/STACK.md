@@ -351,7 +351,7 @@ export all have to be genuinely good. Budget for that.
 |---|---|---|
 | Human authentication | **OIDC** — Keycloak, Zitadel, Okta, Entra, Google, Authentik | FROZEN |
 | Machine authentication | OIDC client credentials, short-lived tokens; SPIFFE/SPIRE optional later | FROZEN |
-| dbauthz's own authorization | **Cedar** — dogfood the engine | FROZEN |
+| dbauthz's own authorization | **dbauthz's own evaluator** (§3.3) — dogfood the engine | FROZEN, amended by [ADR-0001](adr/0001-control-plane-authz-uses-own-evaluator.md) |
 | User provisioning | SCIM | Deferred |
 | Secret storage | Pluggable `SecretProvider`: env, file, K8s Secret, Vault, AWS SM, GCP SM, Azure KV | FROZEN |
 | Local encryption | Envelope encryption via KMS / Vault Transit / `age` | FROZEN |
