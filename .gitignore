@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+*.test
+coverage.out
+
+# Local environment and secrets. Never commit credentials.
+.env
+.env.*
+.envrc
+
+# Editor and OS files
+.DS_Store
+.idea/
+*.swp
+
+# Claude Code personal settings
+.claude/settings.local.json
